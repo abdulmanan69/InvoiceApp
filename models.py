@@ -558,20 +558,21 @@ def compute_totals(items: list[dict], discount_type: str, discount_value, defaul
 
 # =========================================================================== status
 def compute_status(doc_type: str, total: float, paid: float, due_date, converted: bool = False,
-                   today: dt.date | None = None) -> str:
+                   today: dt.date | None = None, grace: int = 0) -> str:
     today = today or dt.date.today()
     due = parse_date(due_date)
+    grace = max(0, int(grace or 0))
     if doc_type == QUOTATION:
         if converted:
             return STATUS_CONVERTED
-        if due and due < today:
+        if due and (today - due).days > grace:
             return STATUS_EXPIRED
         return STATUS_OPEN
     total = float(total or 0)
     paid = float(paid or 0)
     if paid >= total - 0.005:
         return STATUS_PAID
-    if due and due < today:
+    if due and (today - due).days > grace:
         return STATUS_OVERDUE
     if paid > 0.005:
         return STATUS_PARTIAL
@@ -624,12 +625,16 @@ _DOC_SELECT = """
 """
 
 
-def _decorate(row: dict) -> dict:
+def overdue_grace(db: Database) -> int:
+    return max(0, parse_int(db.get_setting("overdue_grace_days", "0"), 0) or 0)
+
+
+def _decorate(row: dict, grace: int = 0) -> dict:
     row["paid"] = round2(row.get("paid") or 0)
     row["credit"] = round2(row.get("credit") or 0)
     row["balance"] = round2(float(row.get("total") or 0) - row["paid"] - row["credit"])
     row["status"] = compute_status(row["doc_type"], row.get("total"), row["paid"] + row["credit"], row.get("due_date"),
-                                   bool(row.get("converted_count")))
+                                   bool(row.get("converted_count")), grace=grace)
     row["customer_display"] = row.get("customer_name") or "(no customer)"
     if row.get("customer_company"):
         row["customer_display"] += f" - {row['customer_company']}"
@@ -654,7 +659,8 @@ def list_documents(db: Database, doc_type: str, search: str = "", status: str = 
         sql += " AND d.date <= ?"
         params.append(dtn.isoformat())
     sql += " ORDER BY d.date DESC, d.id DESC"
-    rows = [_decorate(r) for r in db.query(sql, params)]
+    grace = overdue_grace(db)
+    rows = [_decorate(r, grace) for r in db.query(sql, params)]
     if status:
         rows = [r for r in rows if r["status"] == status]
     return rows
@@ -666,7 +672,7 @@ def get_document(db: Database, doc_id) -> dict | None:
     row = db.query_one(_DOC_SELECT + " WHERE d.id = ?", (doc_id,))
     if not row:
         return None
-    _decorate(row)
+    _decorate(row, overdue_grace(db))
     row["items"] = db.query(
         "SELECT i.*, COALESCE(NULLIF(i.sku, ''), p.sku, '') AS sku_display FROM document_items i"
         " LEFT JOIN products p ON p.id = i.product_id WHERE i.document_id = ? ORDER BY i.sort_order, i.id", (doc_id,))
@@ -1203,38 +1209,72 @@ def profit_summary(db: Database, date_from=None, date_to=None) -> dict:
     return {"revenue": revenue, "cost": cost, "profit": round2(revenue - cost)}
 
 
-def dashboard_stats(db: Database) -> dict:
-    invoices = list_documents(db, INVOICE)
+PERIOD_LABELS = {"week": "this week", "month": "this month", "last30": "last 30 days",
+                 "year": "this year", "all": "all time"}
+
+
+def _period_start(period: str):
+    """Return the ISO start date for a dashboard period, or None for all-time."""
     today = dt.date.today()
-    month_start = today.replace(day=1).isoformat()
+    if period == "week":
+        return (today - dt.timedelta(days=today.weekday())).isoformat()
+    if period == "last30":
+        return (today - dt.timedelta(days=30)).isoformat()
+    if period == "year":
+        return today.replace(month=1, day=1).isoformat()
+    if period == "all":
+        return None
+    return today.replace(day=1).isoformat()  # month (default)
+
+
+def dashboard_stats(db: Database, period: str = "month", recent: int = 6, best: int = 6) -> dict:
+    invoices = list_documents(db, INVOICE)
+    period = period if period in PERIOD_LABELS else "month"
+    start = _period_start(period)
+    recent = max(1, min(50, int(recent or 6)))
     outstanding = round2(sum(r["balance"] for r in invoices if r["balance"] > 0))
     overdue = [r for r in invoices if r["status"] == STATUS_OVERDUE]
-    paid_month = round2(db.scalar("SELECT SUM(amount) FROM payments WHERE date >= ?", (month_start,), 0) or 0)
-    invoiced_month = round2(sum(float(r["total"] or 0) for r in invoices if (r["date"] or "") >= month_start))
+
+    def _since(sql, params=()):
+        if start:
+            return round2(db.scalar(sql + " AND date >= ?", (*params, start), 0) or 0)
+        return round2(db.scalar(sql.replace("WHERE date >= ?", "WHERE 1=1") if "WHERE date >= ?" in sql else sql,
+                                params, 0) or 0)
+
+    if start:
+        paid_period = round2(db.scalar("SELECT SUM(amount) FROM payments WHERE date >= ?", (start,), 0) or 0)
+        purchases_period = round2(db.scalar("SELECT SUM(total) FROM purchases WHERE date >= ?", (start,), 0) or 0)
+        returns_period = round2(db.scalar("SELECT SUM(total) FROM returns WHERE kind = 'customer' AND date >= ?", (start,), 0) or 0)
+        invoiced_period = round2(sum(float(r["total"] or 0) for r in invoices if (r["date"] or "") >= start))
+    else:
+        paid_period = round2(db.scalar("SELECT SUM(amount) FROM payments", (), 0) or 0)
+        purchases_period = round2(db.scalar("SELECT SUM(total) FROM purchases", (), 0) or 0)
+        returns_period = round2(db.scalar("SELECT SUM(total) FROM returns WHERE kind = 'customer'", (), 0) or 0)
+        invoiced_period = round2(sum(float(r["total"] or 0) for r in invoices))
     open_quotes = [r for r in list_documents(db, QUOTATION) if r["status"] == STATUS_OPEN]
-    purchases_month = round2(db.scalar("SELECT SUM(total) FROM purchases WHERE date >= ?", (month_start,), 0) or 0)
-    returns_month = round2(db.scalar("SELECT SUM(total) FROM returns WHERE kind = 'customer' AND date >= ?", (month_start,), 0) or 0)
     low = low_stock_products(db)
     return {
+        "period": period,
+        "period_label": PERIOD_LABELS[period],
         "outstanding": outstanding,
-        "paid_this_month": paid_month,
-        "invoiced_this_month": invoiced_month,
+        "paid_this_month": paid_period,
+        "invoiced_this_month": invoiced_period,
         "overdue_count": len(overdue),
         "overdue_amount": round2(sum(r["balance"] for r in overdue)),
         "invoice_count": len(invoices),
         "open_quotations": len(open_quotes),
         "customer_count": db.scalar("SELECT COUNT(*) FROM customers", (), 0),
         "product_count": db.scalar("SELECT COUNT(*) FROM products WHERE active = 1", (), 0),
-        "recent_invoices": invoices[:6],
-        "overdue_invoices": sorted(overdue, key=lambda r: r.get("due_date") or "")[:6],
+        "recent_invoices": invoices[:recent],
+        "overdue_invoices": sorted(overdue, key=lambda r: r.get("due_date") or "")[:recent],
         "stock_value": stock_value(db),
         "low_stock": low,
         "low_stock_count": len(low),
-        "purchases_this_month": purchases_month,
-        "returns_this_month": returns_month,
-        "profit_month": profit_summary(db, month_start),
+        "purchases_this_month": purchases_period,
+        "returns_this_month": returns_period,
+        "profit_month": profit_summary(db, start),
         "profit_all": profit_summary(db),
-        "best_sellers": best_sellers(db, 6),
+        "best_sellers": best_sellers(db, best, start),
     }
 
 

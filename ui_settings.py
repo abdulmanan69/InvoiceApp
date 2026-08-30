@@ -46,6 +46,7 @@ class SettingsPage(tk.Frame):
         self.tab_payments()
         self.tab_inventory()
         self.tab_users()
+        self.tab_dashboard()
         self.tab_appearance()
         self.tab_data()
         self.tab_about()
@@ -348,6 +349,49 @@ class SettingsPage(tk.Frame):
                             "replaces ALL current data (a safety copy *.before-restore is kept next to the database).",
                  font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=700, justify="left").pack(anchor="w", pady=(10, 0))
 
+    def tab_dashboard(self):
+        card = self._tab("Dashboard")
+        p = self.app.palette
+        card.grid_columnconfigure(1, weight=1)
+        card.grid_columnconfigure(4, weight=1)
+        self._section(card, "What the dashboard shows")
+        # stats period
+        r = card.grid_size()[1]
+        tk.Label(card, text="Stats period", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=5)
+        self._period_labels = ["This week", "This month", "Last 30 days", "This year", "All time"]
+        self._period_keys = ["week", "month", "last30", "year", "all"]
+        cur = self.app.settings.get("dashboard_period", "month")
+        self.period_combo = tb.Combobox(card, values=self._period_labels, state="readonly", width=16)
+        self.period_combo.current(self._period_keys.index(cur) if cur in self._period_keys else 1)
+        self.period_combo.grid(row=r, column=1, sticky="w", pady=5)
+        tk.Label(card, text="applies to Received / Invoiced / Profit / Purchases / Best sellers", font=p.fonts["small"],
+                 bg=p.card, fg=p.muted).grid(row=r, column=2, columnspan=3, sticky="w", padx=(8, 0))
+        r = card.grid_size()[1]
+        self._row(card, "Recent invoices to show", "dashboard_recent", 8, "1 - 50", r, 0)
+        self._section(card, "Panels & cards")
+        r = card.grid_size()[1]
+        self._toggle(card, "Quick action buttons", "dashboard_quick_actions", "", r, 0)
+        self._toggle(card, "Low stock panel", "dashboard_show_low_stock", "", r, 1)
+        r = card.grid_size()[1]
+        self._toggle(card, "Best sellers panel (owner)", "dashboard_show_best", "", r, 0)
+        self._toggle(card, "Recent activity panel", "dashboard_show_activity", "", r, 1)
+        r = card.grid_size()[1]
+        self._toggle(card, "Gross profit card (owner)", "dashboard_show_profit", "", r, 0)
+        self._section(card, "Money & behaviour")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Currency decimals", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=5)
+        self.vars["currency_decimals"] = tk.StringVar(value=self.app.settings.get("currency_decimals", "2"))
+        tb.Combobox(card, textvariable=self.vars["currency_decimals"], values=["0", "2", "3"], state="readonly",
+                    width=6).grid(row=r, column=1, sticky="w", pady=5)
+        tk.Label(card, text="0 = whole rupees (Rs 1,500), 2 = Rs 1,500.00", font=p.fonts["small"], bg=p.card,
+                 fg=p.muted).grid(row=r, column=2, columnspan=3, sticky="w", padx=(8, 0))
+        r = card.grid_size()[1]
+        self._row(card, "Overdue grace days", "overdue_grace_days", 8, "days after the due date before an invoice is 'Overdue'", r, 0)
+        r = card.grid_size()[1]
+        self._toggle(card, "Enable Quotations (show the Quotations screen)", "enable_quotations", "", r, 0)
+
     def tab_about(self):
         card = self._tab("About")
         p = self.app.palette
@@ -559,12 +603,14 @@ class SettingsPage(tk.Frame):
                             ("invoice_number_padding", 0, 10), ("quotation_number_padding", 0, 10),
                             ("invoice_next_number", 1, 10 ** 9), ("quotation_next_number", 1, 10 ** 9),
                             ("purchase_next_number", 1, 10 ** 9), ("return_next_number", 1, 10 ** 9),
-                            ("low_stock_threshold", 0, 10 ** 9), ("ui_font_size", 8, 14)):
+                            ("low_stock_threshold", 0, 10 ** 9), ("ui_font_size", 8, 14),
+                            ("dashboard_recent", 1, 50), ("overdue_grace_days", 0, 3650), ("currency_decimals", 0, 4)):
             v = parse_float(data.get(key), None)
             if v is None or v < lo or v > hi:
                 show_error(self, f"'{key.replace('_', ' ')}' must be a number between {lo} and {hi}.")
                 return None
             data[key] = str(int(v)) if key not in ("default_tax_rate", "low_stock_threshold") else str(v)
+        data["dashboard_period"] = self._period_keys[self.period_combo.current()] if self.period_combo.current() >= 0 else "month"
         for key in THEME_KEYS[:7]:
             if not is_hex_color(data.get(key, "")):
                 show_error(self, f"'{key.replace('_', ' ')}' must be a hex color like #2563eb.")

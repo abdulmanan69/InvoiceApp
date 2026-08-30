@@ -59,8 +59,11 @@ class Sidebar(tk.Frame):
                  fg=p.sidebar_fg, anchor="w").pack(fill="x", pady=(2, 0))
         tk.Frame(self, bg=p.sidebar_hover, height=1).pack(fill="x", padx=16, pady=(0, 10))
 
+        quotations_on = app.settings.get("enable_quotations", "1") == "1"
         for key, icon, label, owner_only in NAV_ITEMS:
             if owner_only and not app.is_owner:
+                continue
+            if key == "quotations" and not quotations_on:
                 continue
             row = tk.Frame(self, bg=p.sidebar_bg, cursor="hand2")
             row.pack(fill="x", padx=10, pady=2)

@@ -318,6 +318,18 @@ DEFAULT_SETTINGS = {
     "ui_font": "Segoe UI",
     "ui_font_size": "10",
     "date_format": "%d %b %Y",
+    "currency_decimals": "2",
+    # dashboard
+    "dashboard_period": "month",
+    "dashboard_recent": "6",
+    "dashboard_show_low_stock": "1",
+    "dashboard_show_best": "1",
+    "dashboard_show_profit": "1",
+    "dashboard_show_activity": "1",
+    "dashboard_quick_actions": "1",
+    # behaviour
+    "enable_quotations": "1",
+    "overdue_grace_days": "0",
 }
 
 

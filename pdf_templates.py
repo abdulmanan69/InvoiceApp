@@ -201,7 +201,11 @@ class BaseTemplate:
         }
 
     def money(self, value) -> str:
-        return money(value, self.symbol)
+        try:
+            dec = int(self.settings.get("currency_decimals", "2"))
+        except (TypeError, ValueError):
+            dec = 2
+        return money(value, self.symbol, max(0, min(4, dec)))
 
     def date(self, value) -> str:
         return fmt_date(value, self.date_format) or "-"

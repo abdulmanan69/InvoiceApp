@@ -566,7 +566,11 @@ class Dialog(tb.Toplevel):
 
 # =========================================================================== formatting helpers
 def fmt_money(app, value) -> str:
-    return money(value, app.settings.get("currency_symbol", ""))
+    try:
+        dec = int(app.settings.get("currency_decimals", "2"))
+    except (TypeError, ValueError):
+        dec = 2
+    return money(value, app.settings.get("currency_symbol", ""), max(0, min(4, dec)))
 
 
 def fmt_day(app, value) -> str:
