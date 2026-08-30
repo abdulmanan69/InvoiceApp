@@ -44,14 +44,92 @@ def ask_open_path(parent, title: str, filetypes) -> str | None:
 
 
 # =========================================================================== small widgets
+def _round_points(x1, y1, x2, y2, r):
+    r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+    return [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+
+
 class Card(tk.Frame):
-    """A flat panel with a subtle border on the page background."""
+    """A panel on the page background. With app.corner_radius > 0 it is drawn with rounded corners
+    (a canvas paints the rounded background; content lives in this frame on top). Flat otherwise."""
 
     def __init__(self, master, app, padding=16, **kw):
         p = app.palette
-        super().__init__(master, bg=p.card, highlightbackground=p.border, highlightthickness=1, bd=0,
-                         padx=padding, pady=padding, **kw)
         self.app = app
+        self._wrap = None
+        radius = int(getattr(app, "corner_radius", 0) or 0)
+        if radius <= 0:
+            super().__init__(master, bg=p.card, highlightbackground=p.border, highlightthickness=1, bd=0,
+                             padx=padding, pady=padding, **kw)
+            return
+        self._radius = radius
+        self._wrap = tk.Frame(master, bg=p.bg)
+        self._canvas = tk.Canvas(self._wrap, bg=p.bg, highlightthickness=0, bd=0)
+        self._canvas.pack(fill="both", expand=True)
+        super().__init__(self._canvas, bg=p.card, padx=padding, pady=padding, **kw)
+        self._winid = self._canvas.create_window(radius, radius, window=self, anchor="nw")
+        self._inner_size = (0, 0)
+        self._inner_w = 0
+        self.bind("<Configure>", self._on_inner)
+        self._canvas.bind("<Configure>", self._on_canvas)
+
+    # -- rounded-mode geometry: content size grows the canvas; parent size fills the content width --
+    def _on_inner(self, e):
+        # content height drives the card height (so it never clips and scrolling works); width follows parent
+        r = self._radius
+        need = e.height + 2 * r
+        if abs(self._canvas.winfo_reqheight() - need) > 1:
+            self._canvas.configure(height=need)
+        if self._canvas.winfo_width() <= 1:
+            self._canvas.configure(width=e.width + 2 * r)
+        self._canvas.itemconfigure(self._winid, height=e.height)
+        self._redraw()
+
+    def _on_canvas(self, e):
+        r = self._radius
+        self._canvas.itemconfigure(self._winid, width=max(1, e.width - 2 * r))
+        self._redraw()
+
+    def _redraw(self):
+        c = self._canvas
+        w, h = c.winfo_width(), c.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+        p = self.app.palette
+        c.delete("cardbg")
+        c.create_polygon(_round_points(1, 1, w - 1, h - 1, self._radius), smooth=True, splinesteps=16,
+                         fill=p.card, outline=p.border, width=1, tags="cardbg")
+        c.tag_lower("cardbg")
+
+    def _mgr(self, name, *a, **k):
+        if self._wrap is None:
+            return getattr(super(), name)(*a, **k)
+        return getattr(self._wrap, name)(*a, **k)
+
+    def pack(self, *a, **k):
+        self._mgr("pack", *a, **k)
+        return self
+
+    def grid(self, *a, **k):
+        self._mgr("grid", *a, **k)
+        return self
+
+    def place(self, *a, **k):
+        self._mgr("place", *a, **k)
+        return self
+
+    def pack_forget(self):
+        self._mgr("pack_forget")
+
+    def grid_forget(self):
+        self._mgr("grid_forget")
+
+    def grid_remove(self):
+        self._mgr("grid_remove")
+
+    def place_forget(self):
+        self._mgr("place_forget")
 
 
 class StatusBadge(tk.Label):
@@ -527,7 +605,7 @@ class Dialog(tb.Toplevel):
         self.button_bar.pack(side="bottom", fill="x", pady=(16, 0))
         if scrollable:
             # body scrolls when the window is shorter than its content (small laptop screens)
-            self._scroll = tb.ScrolledFrame(self.outer, autohide=True)
+            self._scroll = tb.ScrolledFrame(self.outer, autohide=False)
             self._scroll.pack(side="top", fill="both", expand=True)
             self.body = self._scroll
         else:

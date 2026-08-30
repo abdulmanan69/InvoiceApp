@@ -110,10 +110,14 @@ class LineRow:
         entries = []
         for c, (key, var) in enumerate((("description", self.desc), ("quantity", self.qty), ("unit", self.unit),
                                          ("unit_price", self.price), ("tax_rate", self.tax)), start=1):
-            e = tb.Entry(self.frame, textvariable=var, width=widths[key])
+            if key == "quantity":
+                e = tb.Spinbox(self.frame, textvariable=var, from_=0, to=1000000, increment=1,
+                               width=7, justify="right")
+            else:
+                e = tb.Entry(self.frame, textvariable=var, width=widths[key])
+                if key in ("unit_price", "tax_rate"):
+                    e.configure(justify="right")
             e.grid(row=0, column=c, sticky="ew", padx=(0, 4))
-            if key in ("quantity", "unit_price", "tax_rate"):
-                e.configure(justify="right")
             var.trace_add("write", lambda *_: editor.recalc())
             entries.append(e)
         self.desc_entry = entries[0]

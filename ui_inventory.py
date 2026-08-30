@@ -77,7 +77,8 @@ class LineGrid(tk.Frame):
             tk.Label(fr, text=fmt_number(item["ref_qty"]) if item.get("ref_qty") is not None else "-", font=p.fonts["base"],
                      bg=p.card, fg=p.muted, anchor="e", width=8).grid(row=0, column=c, sticky="ew", padx=(0, 4))
             c += 1
-        tb.Entry(fr, textvariable=row["qty"], width=7, justify="right").grid(row=0, column=c, sticky="ew", padx=(0, 4))
+        tb.Spinbox(fr, textvariable=row["qty"], from_=0, to=1000000, increment=1, width=7, justify="right").grid(
+            row=0, column=c, sticky="ew", padx=(0, 4))
         c += 1
         tb.Entry(fr, textvariable=row["price"], width=12, justify="right").grid(row=0, column=c, sticky="ew", padx=(0, 4))
         c += 1

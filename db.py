@@ -317,6 +317,7 @@ DEFAULT_SETTINGS = {
     "theme_muted": "#64748b",
     "ui_font": "Segoe UI",
     "ui_font_size": "10",
+    "ui_radius": "10",
     "date_format": "%d %b %Y",
     "pdf_font": "Auto",
     "currency_decimals": "2",

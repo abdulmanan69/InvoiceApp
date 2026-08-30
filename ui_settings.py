@@ -56,7 +56,7 @@ class SettingsPage(tk.Frame):
         p = self.app.palette
         outer = tk.Frame(self.nb, bg=p.bg)
         self.nb.add(outer, text=title)
-        sf = tb.ScrolledFrame(outer, auto_hide=True)
+        sf = tb.ScrolledFrame(outer, auto_hide=False)
         sf.pack(fill="both", expand=True)
         card = Card(sf, self.app, padding=20)
         card.pack(fill="both", expand=True, padx=2, pady=10)
@@ -340,6 +340,17 @@ class SettingsPage(tk.Frame):
             row=r, column=1, sticky="w", pady=4)
         tk.Label(card, text="font used on invoice / quotation PDFs (Auto = per template)", font=p.fonts["small"],
                  bg=p.card, fg=p.muted).grid(row=r, column=2, columnspan=3, sticky="w", padx=(8, 0))
+        r = card.grid_size()[1]
+        tk.Label(card, text="Corner radius", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self._radius_map = {"Square (sharp)": 0, "Soft": 10, "Rounded": 16}
+        cur_r = int(self.app.settings.get("ui_radius", "10") or 0)
+        cur_label = next((k for k, v in self._radius_map.items() if v == cur_r), "Soft")
+        self.radius_combo = tb.Combobox(card, values=list(self._radius_map), state="readonly", width=16)
+        self.radius_combo.set(cur_label)
+        self.radius_combo.grid(row=r, column=1, sticky="w", pady=4)
+        tk.Label(card, text="rounded panels & cards across the app", font=p.fonts["small"], bg=p.card,
+                 fg=p.muted).grid(row=r, column=2, columnspan=3, sticky="w", padx=(8, 0))
         r = card.grid_size()[1]
         prev = tk.Frame(card, bg=p.card)
         prev.grid(row=r, column=0, columnspan=6, sticky="w", pady=(14, 0))
@@ -641,6 +652,7 @@ class SettingsPage(tk.Frame):
                 return None
         data["payment_methods"] = json.dumps(list(self.methods.get(0, "end")))
         data["doc_display_defaults"] = json.dumps({k: (1 if v.get() else 0) for k, v in self.display_vars.items()})
+        data["ui_radius"] = str(self._radius_map.get(self.radius_combo.get(), 10))
         data.setdefault("company_logo", "")
         return data
 
