@@ -43,7 +43,8 @@ class SetupOwnerDialog(_CenteredDialog):
         self.form.entry("Username *", "username", "owner")
         self.form.entry("Password *", "password", show="*")
         self.form.entry("Confirm password *", "confirm", show="*")
-        self.buttons("Create account", self.save, cancel_text="Quit")
+        self.buttons("Create account", self.save, cancel_text="Quit",
+                     extra=[("Join a shop (employee)", self.join_shop, "info-outline")])
         self.form.widgets["full_name"].focus_set()
         self.bind("<Return>", lambda e: self.save())
 
@@ -58,6 +59,50 @@ class SetupOwnerDialog(_CenteredDialog):
             show_error(self, str(e))
             return
         self.result = models.get_user(self.app.db, uid)
+        self.close()
+
+    def join_shop(self):
+        user = JoinShopDialog(self, self.app).show()
+        if user:
+            self.result = user
+            self.close()
+
+
+class JoinShopDialog(_CenteredDialog):
+    """Employee onboarding on a new PC: sign in with the cloud account the owner created, which sets
+    up a matching local account and starts syncing. No local owner account needed."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent, app, "Join a shop", width=540)
+        p = app.palette
+        tk.Label(self.body, text="Join your shop", font=p.fonts["title"], bg=p.bg, fg=p.fg, anchor="w").pack(fill="x")
+        tk.Label(self.body, text="Enter the details your owner gave you. The app signs you in, downloads your\n"
+                                 "shop's data, and keeps it synced. It works offline afterwards.",
+                 font=p.fonts["base"], bg=p.bg, fg=p.muted, justify="left", anchor="w").pack(fill="x", pady=(4, 14))
+        box = tk.Frame(self.body, bg=p.bg)
+        box.pack(fill="x")
+        self.form = Form(box, app, columns=1, label_width=16)
+        self.form.entry("Project URL *", "url", app.db.get_setting("cloud_url", ""))
+        self.form.entry("Anon key *", "anon", app.db.get_setting("cloud_anon_key", ""))
+        self.form.entry("Your email *", "email")
+        self.form.entry("Your password *", "password", show="*")
+        self.message = tk.Label(self.body, text="", font=p.fonts["small"], bg=p.bg, fg=p.muted, anchor="w",
+                                wraplength=490, justify="left")
+        self.message.pack(fill="x", pady=(6, 0))
+        self.buttons("Join shop", self.join, cancel_text="Back")
+        self.form.widgets["email"].focus_set()
+        self.bind("<Return>", lambda e: self.join())
+
+    def join(self):
+        d = self.form.get()
+        self.message.configure(text="Joining... signing in and downloading your data.", fg=self.app.palette.muted)
+        self.update_idletasks()
+        try:
+            user = models.cloud_join(self.app.db, d["url"], d["anon"], d["email"], d["password"])
+        except Exception as e:
+            self.message.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        self.result = user
         self.close()
 
 
@@ -77,9 +122,16 @@ class LoginDialog(_CenteredDialog):
         self.message = tk.Label(self.body, text="", font=p.fonts["small"], bg=p.bg, fg=p.danger, anchor="w")
         self.message.pack(fill="x", pady=(6, 0))
         self.attempts = 0
-        self.buttons("Sign in", self.login, cancel_text="Quit")
+        self.buttons("Sign in", self.login, cancel_text="Quit",
+                     extra=[("Join a shop", self.join_shop, "info-outline")])
         self.form.widgets["username"].focus_set()
         self.bind("<Return>", lambda e: self.login())
+
+    def join_shop(self):
+        user = JoinShopDialog(self, self.app).show()
+        if user:
+            self.result = user
+            self.close()
 
     def login(self):
         d = self.form.get()

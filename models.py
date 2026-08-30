@@ -93,8 +93,8 @@ def get_user(db: Database, user_id) -> dict | None:
 
 def create_user(db: Database, username: str, password: str, role: str = ROLE_EMPLOYEE, full_name: str = "") -> int:
     username = _clean(username)
-    if not re.fullmatch(r"[A-Za-z0-9_.@-]{2,40}", username):
-        raise ValidationError("Username must be 2-40 characters (letters, numbers, . _ - @).")
+    if not re.fullmatch(r"[A-Za-z0-9_.@+-]{2,64}", username):
+        raise ValidationError("Username must be 2-64 characters (letters, numbers, . _ - + @).")
     if len(password or "") < 4:
         raise ValidationError("Password must be at least 4 characters.")
     if role not in (ROLE_OWNER, ROLE_EMPLOYEE):
@@ -1435,6 +1435,45 @@ def cloud_add_employee(db: Database, email: str, password: str, role: str = ROLE
                   on_conflict="user_id,shop_id")
     db.log("cloud", f"Added cloud {role} {email}", "cloud", None)
     return user
+
+
+def cloud_my_role(db: Database) -> str:
+    """The signed-in user's role in the currently linked shop, from the cloud members table."""
+    uid = cloud_user(db).get("id")
+    if not uid or not cloud_shop_id(db):
+        return ""
+    for m in cloud_list_members(db):
+        if m.get("user_id") == uid:
+            return m.get("role") or ROLE_EMPLOYEE
+    return ""
+
+
+def cloud_join(db: Database, url: str, anon_key: str, email: str, password: str) -> dict:
+    """Employee onboarding on a fresh PC: configure cloud, sign in, link the shop, and create (or
+    refresh) a matching LOCAL account so the person can log into the app - as the same role the owner
+    gave them - and have their data sync. Returns the local user row."""
+    url, anon_key, email = _clean(url), _clean(anon_key), _clean(email)
+    if not url or not anon_key:
+        raise ValidationError("Enter the Project URL and the anon key (ask the owner for these).")
+    db.set_settings({"cloud_url": url, "cloud_anon_key": anon_key, "cloud_enabled": "1"})
+    cloud_sign_in(db, email, password)                    # stores session; auto-links a single shop
+    if not cloud_shop_id(db):
+        shops = cloud_list_shops(db)
+        if not shops:
+            raise ValidationError("Your account is not added to any shop yet. Ask the owner to add your "
+                                  "email under Settings > Cloud sync > Team.")
+        cloud_link_shop(db, shops[0]["id"], shops[0].get("name", ""))
+    role = cloud_my_role(db) or ROLE_EMPLOYEE
+    meta = cloud_user(db).get("user_metadata") or {}
+    full_name = _clean(meta.get("full_name")) or email.split("@")[0]
+    existing = db.query_one("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (email,))
+    if existing:
+        update_user(db, existing["id"], full_name=full_name, role=role, active=True, password=password)
+        uid = existing["id"]
+    else:
+        uid = create_user(db, email, password, role, full_name)
+    db.log("cloud", f"Joined cloud shop as {role} ({email})", "cloud", None)
+    return get_user(db, uid)
 
 
 def cloud_list_members(db: Database) -> list[dict]:
