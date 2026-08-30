@@ -171,7 +171,9 @@ begin
     end if;
     select code into c from public.shop_codes where shop_id = p_shop;
     if c is null then
-        c := encode(gen_random_bytes(9), 'hex');
+        -- built-in randomness only (gen_random_bytes needs the pgcrypto extension, which is not
+        -- always on the search path in Supabase projects)
+        c := substr(md5(random()::text || clock_timestamp()::text), 1, 18);
         insert into public.shop_codes(shop_id, code) values (p_shop, c)
             on conflict (shop_id) do update set code = excluded.code;
     end if;
