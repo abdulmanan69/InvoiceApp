@@ -94,5 +94,22 @@ begin
   end loop;
 end $$;
 
+-- ---- create-shop helper (used by the app's "Create shop" button) ----------
+-- Runs as a trusted function so it can make the shop AND the owner membership in
+-- one step, avoiding the RLS chicken-and-egg on first insert.
+create or replace function public.create_shop(p_name text)
+returns public.shops language plpgsql security definer set search_path = public as $$
+declare s public.shops;
+begin
+    if auth.uid() is null then
+        raise exception 'not signed in';
+    end if;
+    insert into public.shops(name, created_by) values (p_name, auth.uid()) returning * into s;
+    insert into public.members(user_id, shop_id, role) values (auth.uid(), s.id, 'owner')
+        on conflict (user_id, shop_id) do update set role = 'owner';
+    return s;
+end $$;
+grant execute on function public.create_shop(text) to authenticated;
+
 -- Done. In the app: Settings -> Cloud sync -> paste Project URL + anon key,
 -- sign in, create your shop, then add employees under Team.

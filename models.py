@@ -1343,10 +1343,12 @@ def cloud_create_shop(db: Database, name: str) -> dict:
     if not tok:
         raise ValidationError("Sign in to the cloud first.")
     sb = cloud_client(db)
-    uid = cloud_user(db).get("id")
-    rows = sb.insert("shops", tok, [{"name": name, "created_by": uid}])
-    shop = rows[0]
-    sb.insert("members", tok, [{"user_id": uid, "shop_id": shop["id"], "role": "owner"}])
+    # a server-side function creates the shop + owner membership in one trusted step
+    # (avoids the RLS chicken-and-egg where the row can't be read before membership exists)
+    data = sb.rpc("create_shop", tok, {"p_name": name})
+    shop = data[0] if isinstance(data, list) else data
+    if not shop or not shop.get("id"):
+        raise ValidationError("The shop was not created. Re-run SUPABASE_SETUP.sql and try again.")
     db.set_setting("cloud_shop_id", shop["id"])
     db.set_setting("cloud_shop_name", shop["name"])
     _stamp_shop_id(db, shop["id"])

@@ -122,3 +122,7 @@ class Supabase:
         headers = self._auth_headers(token, {"Prefer": "return=representation"})
         _, data = _request("POST", f"{self.url}/rest/v1/{table}", headers, rows)
         return data or []
+
+    def rpc(self, fn: str, token: str, params: dict | None = None):
+        _, data = _request("POST", f"{self.url}/rest/v1/rpc/{fn}", self._auth_headers(token), params or {})
+        return data
