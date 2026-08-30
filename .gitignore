@@ -9,3 +9,4 @@ __pycache__/
 .playwright-mcp/
 graphify-out/
 *.before-restore
+*.png
