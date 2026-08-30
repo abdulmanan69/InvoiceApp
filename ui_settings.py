@@ -48,6 +48,7 @@ class SettingsPage(tk.Frame):
         self.tab_users()
         self.tab_appearance()
         self.tab_data()
+        self.tab_about()
 
     # ------------------------------------------------------------------ helpers
     def _tab(self, title):
@@ -346,6 +347,44 @@ class SettingsPage(tk.Frame):
         tk.Label(card, text="A backup is a complete copy of the .db file (customers, invoices, stock, users...). Restoring "
                             "replaces ALL current data (a safety copy *.before-restore is kept next to the database).",
                  font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=700, justify="left").pack(anchor="w", pady=(10, 0))
+
+    def tab_about(self):
+        card = self._tab("About")
+        p = self.app.palette
+        try:
+            from main import APP_VERSION
+        except Exception:
+            APP_VERSION = ""
+
+        tk.Label(card, text=self.app.settings.get("company_name") or "InvoiceApp", font=p.fonts["title"],
+                 bg=p.card, fg=p.fg, anchor="w").pack(anchor="w")
+        tk.Label(card, text=f"InvoiceApp  v{APP_VERSION}" if APP_VERSION else "InvoiceApp",
+                 font=p.fonts["heading"], bg=p.card, fg=p.accent, anchor="w").pack(anchor="w", pady=(2, 0))
+        tk.Label(card, text="Invoice, quotation, payment and inventory manager for small businesses.\n"
+                            "Runs fully offline on a single local database - no server, no subscription.",
+                 font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="w", justify="left").pack(anchor="w", pady=(6, 0))
+
+        tk.Frame(card, bg=p.border, height=1).pack(fill="x", pady=16)
+
+        tk.Label(card, text="DEVELOPER", font=p.fonts["small_bold"], bg=p.card, fg=p.accent, anchor="w").pack(anchor="w")
+        tk.Label(card, text="Abdul Manan", font=p.fonts["heading"], bg=p.card, fg=p.fg, anchor="w").pack(anchor="w", pady=(2, 0))
+
+        row = tk.Frame(card, bg=p.card)
+        row.pack(anchor="w", pady=(4, 0))
+        tk.Label(row, text="GitHub:", font=p.fonts["base"], bg=p.card, fg=p.muted).pack(side="left")
+        link = tk.Label(row, text="@abdulmanan69", font=p.fonts["bold"], bg=p.card, fg=p.accent, cursor="hand2")
+        link.pack(side="left", padx=(6, 0))
+        url = "https://github.com/abdulmanan69"
+        link.bind("<Button-1>", lambda e: open_file(url))
+        link.bind("<Enter>", lambda e: link.configure(font=(p.font, p.font_size, "underline")))
+        link.bind("<Leave>", lambda e: link.configure(font=p.fonts["bold"]))
+
+        btns = tk.Frame(card, bg=p.card)
+        btns.pack(anchor="w", pady=(12, 0))
+        button(btns, "Open GitHub profile", lambda: open_file(url), "primary").pack(side="left")
+
+        tk.Label(card, text="Made with care. Thank you for using InvoiceApp.", font=p.fonts["small"], bg=p.card,
+                 fg=p.muted, anchor="w").pack(anchor="w", pady=(18, 0))
 
     # ------------------------------------------------------------------ users
     def refresh_users(self):
