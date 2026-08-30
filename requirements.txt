@@ -1,0 +1,4 @@
+reportlab>=4.0
+ttkbootstrap>=2.0
+pillow>=10.0
+pyinstaller>=6.0

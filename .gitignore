@@ -1,0 +1,11 @@
+# runtime data & build output
+data/
+dist/
+build/
+*.spec
+InvoiceApp.exe
+__pycache__/
+*.pyc
+.playwright-mcp/
+graphify-out/
+*.before-restore
