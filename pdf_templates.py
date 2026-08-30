@@ -24,7 +24,7 @@ from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, NextPageTe
 from db import DISPLAY_DEFAULTS
 from utils import data_dir, fmt_date, fmt_number, is_hex_color, mix, money
 
-TEMPLATE_NAMES = ["Modern", "Classic", "Minimal", "Bold", "Corporate", "Elegant", "Compact"]
+TEMPLATE_NAMES = ["Modern", "Classic", "Minimal", "Bold", "Corporate", "Elegant", "Compact", "Ledger"]
 TEMPLATE_DESCRIPTIONS = {
     "Modern": "Colour band header, sans-serif, zebra rows",
     "Classic": "Centred serif header with double rule, formal",
@@ -33,6 +33,7 @@ TEMPLATE_DESCRIPTIONS = {
     "Corporate": "Accent stripe, two-column header, boxed totals",
     "Elegant": "Serif, thin double rules, understated colour",
     "Compact": "Dense layout for long item lists",
+    "Ledger": "Boxed sheet: filled meta cells, dark grid, comments box (classic quotation form)",
 }
 PAGE_SIZES = {"A4": A4, "Letter": LETTER}
 
@@ -76,6 +77,25 @@ def serif_fonts() -> tuple[str, str]:
         [("Georgia", "georgia.ttf", "georgiab.ttf"), ("TimesNewRoman", "times.ttf", "timesbd.ttf")],
         ("Times-Roman", "Times-Bold"),
     )
+
+
+_NAMED_FONTS = {
+    "Segoe UI": [("SegoeUI", "segoeui.ttf", "segoeuib.ttf")],
+    "Arial": [("Arial", "arial.ttf", "arialbd.ttf")],
+    "Calibri": [("Calibri", "calibri.ttf", "calibrib.ttf")],
+    "Verdana": [("Verdana", "verdana.ttf", "verdanab.ttf")],
+    "Tahoma": [("Tahoma", "tahoma.ttf", "tahomabd.ttf")],
+    "Georgia": [("Georgia", "georgia.ttf", "georgiab.ttf")],
+    "Times New Roman": [("TimesNewRoman", "times.ttf", "timesbd.ttf")],
+}
+PDF_FONT_CHOICES = ["Auto"] + list(_NAMED_FONTS.keys())
+
+
+def named_font(name: str) -> tuple[str, str]:
+    cand = _NAMED_FONTS.get(name)
+    if not cand:
+        return sans_fonts()
+    return _register_font_family("named_" + name, cand, ("Helvetica", "Helvetica-Bold"))
 
 
 # --------------------------------------------------------------------------- helpers
@@ -164,7 +184,11 @@ class BaseTemplate:
         self.soft = colors.HexColor(mix(accent_hex, "#ffffff", 0.90))
         self.zebra_color = colors.HexColor(mix(fg_hex, "#ffffff", 0.96))
         self.on_accent = colors.white if _lum(self.accent) < 0.55 else self.text
-        self.font, self.font_bold = (serif_fonts() if self.serif else sans_fonts())
+        choice = (settings.get("pdf_font") or "").strip()
+        if choice and choice.lower() != "auto":
+            self.font, self.font_bold = named_font(choice)
+        else:
+            self.font, self.font_bold = (serif_fonts() if self.serif else sans_fonts())
         self.symbol = currency_symbol(doc, settings)
         self.date_format = settings.get("date_format") or "%d %b %Y"
         self.is_invoice = doc.get("doc_type") == "invoice"
@@ -375,6 +399,9 @@ class BaseTemplate:
             rows.append([_p(values[k], self.st["body_r"] if a == "r" else self.st["body"]) for k, _, _, a in spec])
         if not items:
             rows.append([_p("No items", self.st["small"]) if k == "description" else _p("", self.st["body"]) for k, _, _, _ in spec])
+        min_rows = getattr(self, "min_item_rows", 0)
+        while len(rows) - 1 < min_rows:
+            rows.append([_p("", self.st["body"]) for _ in spec])
         fixed = sum(w for _, _, w, _ in spec)
         widths = [w if w else self.frame_width - fixed for _, _, w, _ in spec]
         t = Table(rows, colWidths=widths, repeatRows=1)
@@ -862,9 +889,152 @@ class CompactTemplate(BaseTemplate):
         return style
 
 
+class LedgerTemplate(BaseTemplate):
+    """Boxed 'sheet' layout: logo + big title, meta box with filled cells, black To bar, dark grid table,
+    Subtotal / Advance / TOTAL block, an OTHER COMMENTS box, and a centered thank-you footer."""
+    name = "Ledger"
+    min_item_rows = 12
+    header_first = 44 * mm
+    header_later = 20 * mm
+    footer = 26 * mm
+    zebra = True
+    header_fill = "dark"
+    company_size = 20
+
+    _BLACK = colors.HexColor("#111827")
+
+    def draw_header(self, canv, first: bool):
+        canv.saveState()
+        x, top = self.margin, self.height - self.margin + 4 * mm
+        if first:
+            logo_w, _ = self._draw_logo(canv, x, top, 26 * mm, 22 * mm)
+            name_x = x + (logo_w + 6 * mm if logo_w else 0)
+            canv.setFillColor(self.text)
+            canv.setFont(self.font_bold, self.company_size)
+            canv.drawString(name_x, top - 9 * mm, self.settings.get("company_name", ""))
+            canv.setFont(self.font_bold, 26)
+            canv.drawRightString(self.width - self.margin, top - 10 * mm, self.title.title())
+        else:
+            self._continued(canv, top - 6 * mm, self.text)
+        canv.restoreState()
+
+    def draw_footer(self, canv, doc):
+        canv.saveState()
+        cx = self.width / 2
+        y = self.footer
+        s = self.settings
+        canv.setFillColor(self.muted)
+        canv.setFont(self.font, 8.5)
+        canv.drawCentredString(cx, y + 8 * mm, f"If you have any questions about this {self.title.lower()}, please contact")
+        who = "   ".join(str(v) for v in (s.get("company_name", ""), s.get("company_phone", "")) if v)
+        canv.drawCentredString(cx, y + 4 * mm, who)
+        canv.setFillColor(self.text)
+        canv.setFont(self.font_bold, 10.5)
+        canv.drawCentredString(cx, y - 1 * mm, "Thank You For Your Business!")
+        canv.setFillColor(self.muted)
+        canv.setFont(self.font, 7.2)
+        canv.drawRightString(self.width - self.margin, y - 7 * mm, f"Page {doc.page}")
+        canv.restoreState()
+
+    def _meta_box(self):
+        wl = ParagraphStyle("mwl", fontName=self.font_bold, fontSize=8.6, textColor=colors.white, alignment=TA_RIGHT)
+        lab = ParagraphStyle("mlab", fontName=self.font_bold, fontSize=8.6, textColor=self.text, alignment=TA_RIGHT)
+        rows = [("DATE", self.date(self.doc.get("date"))), ("Serial #", self.doc.get("number", ""))]
+        if self.doc.get("due_date") and self.on("show_due_date"):
+            rows.append(("Valid Until" if not self.is_invoice else "Due Date", self.date(self.doc.get("due_date"))))
+        if self.settings.get("company_tax_number"):
+            rows.append(("NTN", self.settings.get("company_tax_number", "")))
+        data = [[Paragraph(k, lab), Paragraph(str(v), wl)] for k, v in rows]
+        t = Table(data, colWidths=[26 * mm, 34 * mm])
+        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), *_pad(4, 4, 3, 3),
+                               ("BACKGROUND", (1, 0), (1, -1), self._BLACK),
+                               ("BOX", (0, 0), (-1, -1), 0.7, self.text),
+                               ("INNERGRID", (0, 0), (-1, -1), 0.6, self.text)]))
+        return t
+
+    def parties_block(self):
+        addr = [_p(ln, self.st["small"]) for ln in self.company_lines()] or [_p(" ", self.st["small"])]
+        top = Table([[addr, self._meta_box()]], colWidths=[self.frame_width - 62 * mm, 62 * mm])
+        top.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), *_pad(0, 0, 0, 0)]))
+        to_style = ParagraphStyle("tobar", fontName=self.font_bold, fontSize=9, textColor=colors.white)
+        tobar = Table([[Paragraph(self.bill_to_label(), to_style)]], colWidths=[self.frame_width])
+        tobar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), self._BLACK), *_pad(7, 7, 3, 3)]))
+        return [top, Spacer(1, 5 * mm), tobar, Spacer(1, 1.5 * mm)] + self.customer_paragraphs()
+
+    def items_style(self, nrows: int) -> list:
+        style = [("VALIGN", (0, 0), (-1, -1), "TOP"), *_pad(6, 6, 4, 4),
+                 ("BACKGROUND", (0, 0), (-1, 0), self._BLACK),
+                 ("BOX", (0, 0), (-1, -1), 1.1, self.text),
+                 ("LINEAFTER", (0, 0), (-2, -1), 0.6, self.text),
+                 ("LINEBELOW", (0, 0), (-1, 0), 1.1, self.text)]
+        for r in range(1, nrows):
+            if r % 2 == 1:
+                style.append(("BACKGROUND", (0, r), (-1, r), colors.HexColor("#eef0f3")))
+        return style
+
+    def story(self) -> list:
+        parts = self.parties_block()
+        parts.append(Spacer(1, 6 * mm))
+        parts.append(self.items_table())
+        parts.append(Spacer(1, 5 * mm))
+        parts.append(self._bottom_row())
+        return parts
+
+    def _bottom_row(self):
+        cw = self.frame_width - 84 * mm
+        row = Table([[self._comments_box(cw), self._totals_block()]], colWidths=[cw, 84 * mm])
+        row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), *_pad(0, 0, 0, 0),
+                                 ("RIGHTPADDING", (0, 0), (0, -1), 10 * mm)]))
+        return row
+
+    def _comments_box(self, cw):
+        header = ParagraphStyle("cmh", fontName=self.font_bold, fontSize=8.6, textColor=colors.white)
+        head = Table([[Paragraph("OTHER COMMENTS", header)]], colWidths=[cw])
+        head.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), self._BLACK), *_pad(7, 7, 3, 3)]))
+        lines = []
+        if self.doc.get("notes") and self.on("show_notes"):
+            lines.append(_p(self.doc["notes"], self.st["small"]))
+        if self.doc.get("terms") and self.on("show_terms"):
+            lines.append(_p(self.doc["terms"], self.st["small"]))
+        if not lines:
+            lines = [_p(" ", self.st["small"])]
+        box = Table([[lines]], colWidths=[cw], rowHeights=[32 * mm])
+        box.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOX", (0, 0), (-1, -1), 0.7, self.text),
+                                 *_pad(7, 7, 6, 6)]))
+        return Table([[head], [box]], colWidths=[cw])
+
+    def _totals_block(self):
+        d = self.doc
+        lab, val = self.st["strong"], self.st["strong_r"]
+        rows = [("Subtotal", self.money(d.get("subtotal")))]
+        if float(d.get("discount_amount") or 0) > 0 and self.on("show_discount"):
+            rows.append(("Discount", "-" + self.money(d.get("discount_amount"))))
+        if float(d.get("tax_amount") or 0) > 0 and self.on("show_tax_total"):
+            rows.append((self.settings.get("tax_label") or "Tax", self.money(d.get("tax_amount"))))
+        data = [[_p(k, lab), _p(v, val)] for k, v in rows]
+        adv = self.money(d.get("paid")) if (self.is_invoice and float(d.get("paid") or 0) > 0) else ""
+        data.append([_p("Advance", lab), _p(adv, val)])
+        t = Table(data, colWidths=[36 * mm, 40 * mm])
+        t.setStyle(TableStyle([*_pad(6, 6, 3, 3), ("LINEBELOW", (0, 0), (-1, -1), 0.4, self.line),
+                               ("BOX", (1, len(data) - 1), (1, len(data) - 1), 0.6, self.text)]))
+        tl = ParagraphStyle("totl", fontName=self.font_bold, fontSize=11.5, textColor=self.text)
+        tv = ParagraphStyle("totv", fontName=self.font_bold, fontSize=11.5, textColor=colors.white, alignment=TA_RIGHT)
+        tot = Table([[_p("TOTAL", tl), _p(self.money(d.get("total")), tv)]], colWidths=[36 * mm, 40 * mm])
+        tot.setStyle(TableStyle([("BACKGROUND", (1, 0), (1, 0), self._BLACK), *_pad(6, 6, 6, 6)]))
+        rec = Table([[_p("Receiving", self.st["small"]), _p(" ", self.st["small"])]], colWidths=[36 * mm, 40 * mm])
+        rec.setStyle(TableStyle([*_pad(6, 6, 12, 3), ("LINEBELOW", (1, 0), (1, 0), 0.7, self.text)]))
+        outer = Table([[t], [tot], [rec]], colWidths=[76 * mm])
+        outer.setStyle(TableStyle([*_pad(0, 0, 0, 0)]))
+        return outer
+
+    def signature_block(self):
+        return None
+
+
 TEMPLATES = {
     "Modern": ModernTemplate, "Classic": ClassicTemplate, "Minimal": MinimalTemplate, "Bold": BoldTemplate,
     "Corporate": CorporateTemplate, "Elegant": ElegantTemplate, "Compact": CompactTemplate,
+    "Ledger": LedgerTemplate,
 }
 
 

@@ -515,7 +515,7 @@ class Form:
 class Dialog(tb.Toplevel):
     """Modal dialog base: subclasses fill self.body and call self.buttons(...)."""
 
-    def __init__(self, parent, app, title: str, width=620, height=None):
+    def __init__(self, parent, app, title: str, width=620, height=None, scrollable: bool = False):
         super().__init__(title=title, transient=parent.winfo_toplevel(), resizable=(True, True))
         self.app, self.parent, self.result = app, parent, None
         p = app.palette
@@ -524,8 +524,14 @@ class Dialog(tb.Toplevel):
         self.outer.pack(fill="both", expand=True)
         self.button_bar = tk.Frame(self.outer, bg=p.bg)
         self.button_bar.pack(side="bottom", fill="x", pady=(16, 0))
-        self.body = tk.Frame(self.outer, bg=p.bg)
-        self.body.pack(side="top", fill="both", expand=True)
+        if scrollable:
+            # body scrolls when the window is shorter than its content (small laptop screens)
+            self._scroll = tb.ScrolledFrame(self.outer, autohide=True)
+            self._scroll.pack(side="top", fill="both", expand=True)
+            self.body = self._scroll
+        else:
+            self.body = tk.Frame(self.outer, bg=p.bg)
+            self.body.pack(side="top", fill="both", expand=True)
         self.bind("<Escape>", lambda e: self.close())
         self.protocol("WM_DELETE_WINDOW", self.close)
         self._size = (width, height)
@@ -541,16 +547,13 @@ class Dialog(tb.Toplevel):
         w, h = self._size
         self.update_idletasks()
         h = h or max(self.winfo_reqheight(), 200)
-        try:
-            top = self.parent.winfo_toplevel()
-            px, py = top.winfo_rootx(), top.winfo_rooty()
-            pw, ph = top.winfo_width(), top.winfo_height()
-            x = max(0, px + (pw - w) // 2)
-            y = max(0, py + (ph - h) // 2)
-        except Exception:
-            x, y = 200, 120
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w = min(w, sw - 60)          # never wider/taller than the screen (small laptops)
+        h = min(h, sh - 90)
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2 - 20)
         self.geometry(f"{w}x{h}+{x}+{y}")
-        self.minsize(min(w, 480), min(h, 240))
+        self.minsize(min(w, 460), min(h, 240))
         self.grab_set()
         self.focus_force()
         self.wait_window(self)

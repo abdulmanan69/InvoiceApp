@@ -160,7 +160,7 @@ class DocumentEditor(Dialog):
         label = models.DOC_LABEL[doc_type]
         self.doc = models.get_document(app.db, doc_id) if doc_id else None
         title = f"Edit {label} {self.doc['number']}" if self.doc else f"New {label}"
-        super().__init__(parent, app, title, width=1180, height=800)
+        super().__init__(parent, app, title, width=1180, height=800, scrollable=True)
         p = app.palette
         s = app.settings
         self.is_invoice = doc_type == models.INVOICE
@@ -272,7 +272,7 @@ class DocumentEditor(Dialog):
             hdr.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
             tk.Label(hdr, text=text.upper(), font=p.fonts["small_bold"], bg=p.card, fg=p.muted, anchor=anchor,
                      width=(18 if c == 0 else None)).grid(row=0, column=c, sticky="ew", padx=(0, 4))
-        self.items_box = tb.ScrolledFrame(items, auto_hide=False, height=132)
+        self.items_box = tk.Frame(items, bg=p.card)
         self.items_box.pack(fill="both", expand=True, pady=(4, 6))
         foot = tk.Frame(items, bg=p.card)
         foot.pack(fill="x")

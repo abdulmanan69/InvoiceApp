@@ -137,8 +137,15 @@ class App(tb.Window):
         self.container = None
         self.user: dict | None = None
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{min(1380, sw - 60)}x{min(860, sh - 90)}")
+        self.minsize(min(1000, sw - 40), min(600, sh - 80))
         try:
             self.place_window_center()
+        except Exception:
+            pass
+        try:
+            self.state("zoomed")   # open maximized so it fits any screen
         except Exception:
             pass
         self.update_idletasks()

@@ -318,6 +318,7 @@ DEFAULT_SETTINGS = {
     "ui_font": "Segoe UI",
     "ui_font_size": "10",
     "date_format": "%d %b %Y",
+    "pdf_font": "Auto",
     "currency_decimals": "2",
     # dashboard
     "dashboard_period": "month",

@@ -312,10 +312,34 @@ class SettingsPage(tk.Frame):
             self.swatches[key] = sw
             var.trace_add("write", lambda *_, k=key: self._swatch(k))
             button(card, "Pick...", lambda k=key: self.pick_color(k), "secondary-outline").grid(row=r, column=3, sticky="w")
+        import tkinter.font as tkfont
+        from pdf_templates import PDF_FONT_CHOICES
+        try:
+            fams = sorted({f for f in tkfont.families(self) if f and not f.startswith("@")})
+        except Exception:
+            fams = ["Segoe UI", "Arial", "Calibri", "Verdana", "Tahoma", "Georgia", "Times New Roman"]
+        cur_font = self.app.settings.get("ui_font", "Segoe UI")
+        if cur_font not in fams:
+            fams = [cur_font] + fams
         r = card.grid_size()[1]
-        self._row(card, "UI font", "ui_font", 18, "e.g. Segoe UI", r, 0)
+        tk.Label(card, text="App font", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.vars["ui_font"] = tk.StringVar(value=cur_font)
+        tb.Combobox(card, textvariable=self.vars["ui_font"], values=fams, state="readonly", width=24).grid(
+            row=r, column=1, sticky="w", pady=4)
+        tk.Label(card, text="App font size", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=14).grid(
+            row=r, column=3, sticky="e", padx=(0, 8), pady=4)
+        self.vars["ui_font_size"] = tk.StringVar(value=self.app.settings.get("ui_font_size", "10"))
+        tb.Combobox(card, textvariable=self.vars["ui_font_size"], values=[str(x) for x in range(8, 15)],
+                    state="readonly", width=6).grid(row=r, column=4, sticky="w", pady=4)
         r = card.grid_size()[1]
-        self._row(card, "UI font size", "ui_font_size", 6, "8 - 14", r, 0)
+        tk.Label(card, text="PDF font", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.vars["pdf_font"] = tk.StringVar(value=self.app.settings.get("pdf_font", "Auto"))
+        tb.Combobox(card, textvariable=self.vars["pdf_font"], values=PDF_FONT_CHOICES, state="readonly", width=18).grid(
+            row=r, column=1, sticky="w", pady=4)
+        tk.Label(card, text="font used on invoice / quotation PDFs (Auto = per template)", font=p.fonts["small"],
+                 bg=p.card, fg=p.muted).grid(row=r, column=2, columnspan=3, sticky="w", padx=(8, 0))
         r = card.grid_size()[1]
         prev = tk.Frame(card, bg=p.card)
         prev.grid(row=r, column=0, columnspan=6, sticky="w", pady=(14, 0))
