@@ -3,7 +3,7 @@
 ; Installs per-user (no admin prompt) which avoids the harsher SmartScreen elevation warning.
 
 #define AppName "InvoiceApp"
-#define AppVersion "2.6.2"
+#define AppVersion "2.7.0"
 #define AppPublisher "InvoiceApp"
 #define AppExe "InvoiceApp.exe"
 

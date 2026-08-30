@@ -443,6 +443,20 @@ class SettingsPage(tk.Frame):
         button(row, "Create shop", self.cloud_create_shop, "outline").pack(side="left", padx=(8, 0))
         button(row, "Select existing", self.cloud_select_shop, "secondary-outline").pack(side="left", padx=(8, 0))
 
+        self._section(card, "Sync")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Status", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_sync_lbl = tk.Label(card, text="", font=p.fonts["small"], bg=p.card, fg=p.muted, anchor="w")
+        self.cloud_sync_lbl.grid(row=r, column=1, columnspan=4, sticky="w")
+        r = card.grid_size()[1]
+        srow = tk.Frame(card, bg=p.card)
+        srow.grid(row=r, column=1, sticky="w", pady=(2, 6))
+        button(srow, "Sync now", self.cloud_sync_now, "primary").pack(side="left")
+        self.cloud_auto = tk.IntVar(value=1 if self.app.settings.get("cloud_auto_sync", "1") == "1" else 0)
+        tb.Checkbutton(srow, text="Auto-sync every 30s", variable=self.cloud_auto, bootstyle="round-toggle",
+                       command=self.cloud_toggle_auto).pack(side="left", padx=(14, 0))
+
         self._section(card, "Team (owner only) - add employees who can sign in on their own PC")
         r = card.grid_size()[1]
         tk.Label(card, text="Service key", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
@@ -470,6 +484,7 @@ class SettingsPage(tk.Frame):
         self.cloud_members.grid(row=r, column=1, columnspan=4, sticky="w", pady=(8, 0))
         button(card, "Refresh team", self.cloud_refresh_members, "link").grid(row=r + 1, column=1, sticky="w")
         self._cloud_refresh_labels()
+        self.on_sync_status(self.app.sync.status)
 
     # ------------------------------------------------------------------ cloud actions
     def _persist_cloud_conf(self):
@@ -511,6 +526,7 @@ class SettingsPage(tk.Frame):
         self.cloud_pw.set("")
         self.cloud_status.configure(text="Signed in", fg=self.app.palette.success)
         self._cloud_refresh_labels()
+        self.app.sync.trigger()
 
     def cloud_signout(self):
         models.cloud_sign_out(self.app.db)
@@ -527,6 +543,7 @@ class SettingsPage(tk.Frame):
         self.app.reload_settings()
         self.cloud_status.configure(text=f"Shop '{shop['name']}' created & linked", fg=self.app.palette.success)
         self._cloud_refresh_labels()
+        self.app.sync.trigger()
 
     def cloud_select_shop(self):
         self._cloud_busy("Loading shops...")
@@ -558,6 +575,7 @@ class SettingsPage(tk.Frame):
             self.app.reload_settings()
             self.cloud_status.configure(text=f"Linked to '{chosen['name']}'", fg=self.app.palette.success)
             self._cloud_refresh_labels()
+            self.app.sync.trigger()
 
     def cloud_save_service(self):
         v = self.cloud_service.get().strip()
@@ -594,6 +612,42 @@ class SettingsPage(tk.Frame):
             return
         for m in members:
             self.cloud_members.insert("end", f"{m.get('role', ''):10s}  {m.get('user_id', '')}\n")
+
+    def cloud_sync_now(self):
+        import threading
+        if not models.cloud_ready(self.app.db):
+            self.cloud_sync_lbl.configure(text="Enable cloud, sign in and pick a shop first.",
+                                          fg=self.app.palette.danger)
+            return
+        self.cloud_sync_lbl.configure(text="Syncing...", fg=self.app.palette.muted)
+
+        def work():
+            res = self.app.sync.sync_now()
+            self.app.after(0, lambda: self.on_sync_status(res))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def cloud_toggle_auto(self):
+        self.app.db.set_setting("cloud_auto_sync", "1" if self.cloud_auto.get() else "0")
+        self.app.reload_settings()
+        if self.cloud_auto.get():
+            self.app.sync.trigger()
+
+    def on_sync_status(self, status: dict):
+        if not hasattr(self, "cloud_sync_lbl"):
+            return
+        if status.get("running"):
+            self.cloud_sync_lbl.configure(text="Syncing...", fg=self.app.palette.muted)
+            return
+        err = status.get("last_error")
+        if err:
+            self.cloud_sync_lbl.configure(text="Error: " + err, fg=self.app.palette.danger)
+        elif status.get("last_sync"):
+            self.cloud_sync_lbl.configure(
+                text=f"Last sync {status['last_sync']}  (pushed {status.get('pushed', 0)}, "
+                     f"pulled {status.get('pulled', 0)})", fg=self.app.palette.success)
+        else:
+            self.cloud_sync_lbl.configure(text="Not synced yet.", fg=self.app.palette.muted)
 
     def tab_dashboard(self):
         card = self._tab("Dashboard")

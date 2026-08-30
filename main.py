@@ -14,7 +14,7 @@ from db import DEFAULT_SETTINGS, Database
 from theme import apply_theme, build_palette
 from utils import data_dir, now_stamp, resource_path
 
-APP_VERSION = "2.6.2"
+APP_VERSION = "2.7.0"
 
 # (key, icon, label, owner_only)
 NAV_ITEMS = [
@@ -121,6 +121,8 @@ class App(tb.Window):
         self.db = Database(db_path)
         models.ensure_support_user(self.db)
         self.settings = self.db.get_settings()
+        from sync import SyncEngine
+        self.sync = SyncEngine(self)
         self.corner_radius = int(self.settings.get("ui_radius", "10") or 0)
         self.palette = build_palette(self.settings)
         super().__init__(title="InvoiceApp", size=(1380, 860), minsize=(1120, 700))
@@ -234,6 +236,25 @@ class App(tb.Window):
                 "payments": PaymentsPage(self.container, self),
                 "settings": SettingsPage(self.container, self),
             })
+        # background cloud sync (no-op until the user enables + signs in + picks a shop)
+        self.sync.on_change = lambda st: self.after(0, self._on_synced, st)
+        self.sync.start()
+
+    def _on_synced(self, status: dict):
+        """Runs on the UI thread after a sync cycle: refresh the open page if data was pulled,
+        and let the Settings page update its status label."""
+        try:
+            page = self.pages.get(self.current)
+            if page and status.get("pulled"):
+                page.refresh()
+        except Exception:
+            pass
+        settings_page = self.pages.get("settings")
+        if settings_page is not None and hasattr(settings_page, "on_sync_status"):
+            try:
+                settings_page.on_sync_status(status)
+            except Exception:
+                pass
 
     def navigate(self, name: str, **kwargs):
         if name not in self.pages or not self.allowed(name):
@@ -287,6 +308,10 @@ class App(tb.Window):
             print(text, file=sys.stderr)
 
     def on_close(self):
+        try:
+            self.sync.stop()
+        except Exception:
+            pass
         try:
             self.db.close()
         finally:

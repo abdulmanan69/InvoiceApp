@@ -211,6 +211,11 @@ CREATE TABLE IF NOT EXISTS sync_state (
 SYNC_TABLES = ["customers", "vendors", "products", "documents", "document_items", "payments",
                "purchases", "purchase_items", "returns", "return_items", "stock_movements"]
 
+# Tables whose local inserts/updates are actively queued + pushed to the cloud right now.
+# Every SYNC_TABLE still gets a uuid, but only these enqueue into sync_outbox and get pulled.
+# Grow this list as each entity's two-way sync is proven (Phase C).
+SYNC_ACTIVE = ["customers"]
+
 # Columns added after v1.0 (table, column, declaration). Applied idempotently on every start.
 MIGRATIONS = [
     ("users", "hidden", "INTEGER NOT NULL DEFAULT 0"),
@@ -410,13 +415,32 @@ class Database:
             self.conn.commit()
 
     def _create_sync_triggers(self):
-        """Every new row in a synced table automatically gets a UUID + timestamp (no model changes needed)."""
+        """Auto-fill uuid/timestamp on new rows, and for actively-synced tables queue every local
+        insert/update into sync_outbox so the sync engine can push it. When the engine applies rows
+        pulled from the cloud it first sets sync_state 'sync_suppress'='1', which the update trigger
+        checks, so applying remote data never echoes back into the outbox. Triggers are dropped and
+        recreated each start so definition changes take effect on existing databases."""
         for t in SYNC_TABLES:
+            active = t in SYNC_ACTIVE
+            self.conn.execute(f"DROP TRIGGER IF EXISTS trg_{t}_newuuid")
+            self.conn.execute(f"DROP TRIGGER IF EXISTS trg_{t}_upd_ob")
+            ins = (f"UPDATE {t} SET uuid = lower(hex(randomblob(16))), "
+                   f"row_updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE rowid = NEW.rowid;")
+            if active:
+                ins += (f" INSERT INTO sync_outbox(table_name, row_uuid, op, payload, created_at) "
+                        f"SELECT '{t}', uuid, 'upsert', '', strftime('%Y-%m-%d %H:%M:%f','now') "
+                        f"FROM {t} WHERE rowid = NEW.rowid;")
             self.conn.execute(
-                f"CREATE TRIGGER IF NOT EXISTS trg_{t}_newuuid AFTER INSERT ON {t} "
-                f"WHEN NEW.uuid IS NULL OR NEW.uuid = '' BEGIN "
-                f"UPDATE {t} SET uuid = lower(hex(randomblob(16))), "
-                f"row_updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE rowid = NEW.rowid; END;")
+                f"CREATE TRIGGER trg_{t}_newuuid AFTER INSERT ON {t} "
+                f"WHEN NEW.uuid IS NULL OR NEW.uuid = '' BEGIN {ins} END;")
+            if active:
+                self.conn.execute(
+                    f"CREATE TRIGGER trg_{t}_upd_ob AFTER UPDATE ON {t} "
+                    f"WHEN COALESCE((SELECT value FROM sync_state WHERE key = 'sync_suppress'), '0') = '0' "
+                    f"AND NEW.uuid IS NOT NULL AND NEW.uuid <> '' BEGIN "
+                    f"UPDATE {t} SET row_updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE rowid = NEW.rowid; "
+                    f"INSERT INTO sync_outbox(table_name, row_uuid, op, payload, created_at) "
+                    f"VALUES ('{t}', NEW.uuid, 'upsert', '', strftime('%Y-%m-%d %H:%M:%f','now')); END;")
 
     def _backfill_sync_columns(self):
         """Give every existing row a UUID and a row_updated_at so it is ready to sync later."""

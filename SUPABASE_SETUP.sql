@@ -94,6 +94,29 @@ begin
   end loop;
 end $$;
 
+-- ---- keep updated_at server-authoritative --------------------------------
+-- Stamp updated_at = now() on every insert/update so the app's "pull rows newer than X"
+-- ordering is reliable regardless of each PC's clock.
+create or replace function public.set_updated_at()
+returns trigger language plpgsql as $$
+begin
+    new.updated_at := now();
+    return new;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'customers','vendors','products','documents','document_items','payments',
+    'purchases','purchase_items','returns','return_items','stock_movements'
+  ] loop
+    execute format('drop trigger if exists trg_%I_updated on public.%I;', t, t);
+    execute format('create trigger trg_%I_updated before insert or update on public.%I '
+                   'for each row execute function public.set_updated_at();', t, t);
+  end loop;
+end $$;
+
 -- ---- create-shop helper (used by the app's "Create shop" button) ----------
 -- Runs as a trusted function so it can make the shop AND the owner membership in
 -- one step, avoiding the RLS chicken-and-egg on first insert.

@@ -183,8 +183,9 @@ def list_customers(db: Database, search: str = "") -> list[dict]:
         FROM customers c
     """
     params: list = []
+    sql += " WHERE c.deleted = 0"
     if _clean(search):
-        sql += " WHERE c.name LIKE ? OR c.company LIKE ? OR c.email LIKE ? OR c.phone LIKE ?"
+        sql += " AND (c.name LIKE ? OR c.company LIKE ? OR c.email LIKE ? OR c.phone LIKE ?)"
         params = [_like(search)] * 4
     sql += " ORDER BY c.name COLLATE NOCASE"
     rows = db.query(sql, params)
@@ -196,7 +197,7 @@ def list_customers(db: Database, search: str = "") -> list[dict]:
 def get_customer(db: Database, customer_id) -> dict | None:
     if not customer_id:
         return None
-    row = db.query_one("SELECT * FROM customers WHERE id = ?", (customer_id,))
+    row = db.query_one("SELECT * FROM customers WHERE id = ? AND deleted = 0", (customer_id,))
     if row:
         row["balance"] = customer_balance(db, customer_id)
     return row
@@ -236,7 +237,8 @@ def delete_customer(db: Database, customer_id: int) -> None:
     if count:
         raise ValidationError(f"This customer has {count} invoice(s)/quotation(s). Delete or reassign those documents first.")
     row = get_customer(db, customer_id)
-    db.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
+    # soft delete so the removal can sync to other PCs; local reads all filter deleted = 0
+    db.execute("UPDATE customers SET deleted = 1 WHERE id = ?", (customer_id,))
     if row:
         db.log("customer", f"Deleted customer {row['name']}", "customer", customer_id)
 
@@ -1316,6 +1318,38 @@ def cloud_signed_in_email(db: Database) -> str:
 
 def cloud_configured(db: Database) -> bool:
     return bool(_clean(db.get_setting("cloud_url", "")) and _clean(db.get_setting("cloud_anon_key", "")))
+
+
+def cloud_shop_id(db: Database) -> str:
+    return _clean(db.get_setting("cloud_shop_id", ""))
+
+
+def cloud_enabled(db: Database) -> bool:
+    return db.get_setting("cloud_enabled", "0") == "1"
+
+
+def cloud_auto_sync(db: Database) -> bool:
+    return db.get_setting("cloud_auto_sync", "1") == "1"
+
+
+def cloud_ready(db: Database) -> bool:
+    """True when we can actually sync: enabled, configured, signed in, and a shop is linked."""
+    return cloud_enabled(db) and cloud_configured(db) and bool(cloud_token(db)) and bool(cloud_shop_id(db))
+
+
+def cloud_refresh(db: Database) -> str:
+    """Exchange the stored refresh token for a fresh access token (used when one expires)."""
+    sess = cloud_session(db)
+    rt = sess.get("refresh_token")
+    if not rt:
+        return ""
+    data = cloud_client(db).refresh(rt)
+    if data.get("access_token"):
+        db.set_secret("session", {"access_token": data.get("access_token"),
+                                  "refresh_token": data.get("refresh_token", rt),
+                                  "user": data.get("user") or sess.get("user", {})})
+        return data.get("access_token")
+    return ""
 
 
 def cloud_sign_in(db: Database, email: str, password: str) -> dict:
