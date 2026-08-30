@@ -106,6 +106,18 @@ class Supabase:
     def admin_delete_user(self, service_key: str, user_id: str) -> None:
         _request("DELETE", f"{self.url}/auth/v1/admin/users/{user_id}", self._service_headers(service_key))
 
+    def admin_update_user(self, service_key: str, user_id: str, attrs: dict) -> dict:
+        _, data = _request("PUT", f"{self.url}/auth/v1/admin/users/{user_id}",
+                           self._service_headers(service_key), attrs)
+        return data or {}
+
+    def admin_find_user(self, service_key: str, email: str) -> dict | None:
+        email = (email or "").lower()
+        for u in self.admin_list_users(service_key):
+            if (u.get("email") or "").lower() == email:
+                return u
+        return None
+
     # ------------------------------------------------------------------ REST (PostgREST) - used from Phase B on
     def select(self, table: str, token: str, params: dict | None = None) -> list[dict]:
         q = ("?" + urllib.parse.urlencode(params)) if params else ""

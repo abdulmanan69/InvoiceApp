@@ -1427,12 +1427,25 @@ def cloud_add_employee(db: Database, email: str, password: str, role: str = ROLE
         raise ValidationError("Create or select a shop first.")
     tok = cloud_token(db)
     sb = cloud_client(db)
-    user = sb.admin_create_user(service, email, password, {"full_name": _clean(full_name), "role": role})
+    meta = {"full_name": _clean(full_name), "role": role}
     try:
-        sb.insert("members", tok, [{"user_id": user["id"], "shop_id": shop_id, "role": role}])
-    except Exception:
-        sb.upsert("members", tok, [{"user_id": user["id"], "shop_id": shop_id, "role": role}],
-                  on_conflict="user_id,shop_id")
+        user = sb.admin_create_user(service, email, password, meta)
+    except Exception as e:
+        # idempotent: if this email is already registered (e.g. a half-finished earlier attempt),
+        # reuse that auth user, reset the password to what was just typed, and (re)attach the shop.
+        msg = str(e).lower()
+        if "already been registered" not in msg and "already registered" not in msg and "422" not in msg:
+            raise
+        user = sb.admin_find_user(service, email)
+        if not user:
+            raise
+        try:
+            sb.admin_update_user(service, user["id"], {"password": password, "user_metadata": meta})
+        except Exception:
+            pass
+    # attach membership (upsert so re-adding just updates the role, never errors)
+    sb.upsert("members", tok, [{"user_id": user["id"], "shop_id": shop_id, "role": role}],
+              on_conflict="user_id,shop_id")
     db.log("cloud", f"Added cloud {role} {email}", "cloud", None)
     return user
 

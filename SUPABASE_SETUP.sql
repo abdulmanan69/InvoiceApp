@@ -24,10 +24,18 @@ create table if not exists public.members (
     primary key (user_id, shop_id)
 );
 
--- helper: the set of shop ids the current user belongs to
+-- helper: the set of shop ids the current user belongs to.
+-- SECURITY DEFINER so it reads members WITHOUT re-triggering members' own RLS policies
+-- (querying members from inside a members policy would recurse -> "infinite recursion" 500).
 create or replace function public.my_shop_ids()
 returns setof uuid language sql stable security definer set search_path = public as $$
     select shop_id from public.members where user_id = auth.uid()
+$$;
+
+-- helper: the shop ids where the current user is an owner (same recursion-safe reason)
+create or replace function public.my_owner_shop_ids()
+returns setof uuid language sql stable security definer set search_path = public as $$
+    select shop_id from public.members where user_id = auth.uid() and role = 'owner'
 $$;
 
 -- ---- one data table per synced entity -------------------------------------
@@ -64,18 +72,18 @@ create policy shops_insert on public.shops for insert
     with check (created_by = auth.uid());
 drop policy if exists shops_owner_write on public.shops;
 create policy shops_owner_write on public.shops for update
-    using (id in (select shop_id from public.members where user_id = auth.uid() and role = 'owner'));
+    using (id in (select public.my_owner_shop_ids()));
 
+-- members policies must NOT select from members directly (that recurses); use the definer helpers.
 drop policy if exists members_read on public.members;
 create policy members_read on public.members for select
     using (user_id = auth.uid() or shop_id in (select public.my_shop_ids()));
 drop policy if exists members_self_insert on public.members;
 create policy members_self_insert on public.members for insert
-    with check (user_id = auth.uid()
-                or shop_id in (select shop_id from public.members where user_id = auth.uid() and role = 'owner'));
+    with check (user_id = auth.uid() or shop_id in (select public.my_owner_shop_ids()));
 drop policy if exists members_owner_manage on public.members;
 create policy members_owner_manage on public.members for delete
-    using (shop_id in (select shop_id from public.members where user_id = auth.uid() and role = 'owner'));
+    using (shop_id in (select public.my_owner_shop_ids()));
 
 do $$
 declare t text;
