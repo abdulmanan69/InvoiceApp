@@ -392,22 +392,27 @@ class SettingsPage(tk.Frame):
         card.grid_columnconfigure(1, weight=1)
         self._section(card, "Cloud sync (Supabase) - share data across shops, still works offline")
         r = card.grid_size()[1]
-        tk.Label(card, text="Turn this on to sync invoices, quotations, customers, products and stock across the "
-                            "owner's and employees' PCs. When there is no internet the app keeps working and syncs "
-                            "later. First run SUPABASE_SETUP.sql in your Supabase project (SQL editor).",
+        tk.Label(card, text="Owner: follow steps 1-4 below, once. Employees never open this tab - on their PC they "
+                            "click 'Join a shop' on the login screen and paste the invite code from step 4. "
+                            "Everything keeps working offline and syncs when internet returns.",
                  font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=780, justify="left").grid(
-            row=r, column=0, columnspan=6, sticky="w", pady=(0, 6))
+            row=r, column=0, columnspan=6, sticky="w", pady=(0, 2))
+        r = card.grid_size()[1]
+        self.cloud_hint = tk.Label(card, text="", font=p.fonts["small_bold"], bg=p.card, fg=p.accent, anchor="w")
+        self.cloud_hint.grid(row=r, column=0, columnspan=6, sticky="w", pady=(0, 6))
         self._toggle(card, "Enable cloud sync", "cloud_enabled", "off = pure offline (default)")
         self._row(card, "Project URL", "cloud_url", hint="Supabase -> Project Settings -> Data API -> URL")
         self._row(card, "Anon public key", "cloud_anon_key", hint="Project Settings -> API Keys -> anon public")
         r = card.grid_size()[1]
         row = tk.Frame(card, bg=p.card)
         row.grid(row=r, column=1, sticky="w", pady=(2, 4))
-        button(row, "Test connection", self.cloud_test, "outline").pack(side="left")
+        button(row, "Connect & check", self.cloud_test, "outline").pack(side="left")
+        button(row, "Copy setup SQL", self.cloud_copy_sql, "secondary-outline").pack(side="left", padx=(8, 0))
+        button(row, "Open SQL editor", self.cloud_open_sql, "secondary-outline").pack(side="left", padx=(8, 0))
         self.cloud_status = tk.Label(row, text="", font=p.fonts["small"], bg=p.card, fg=p.muted)
         self.cloud_status.pack(side="left", padx=(10, 0))
 
-        self._section(card, "Sign in")
+        self._section(card, "STEP 2 - SIGN IN (your own cloud account)")
         r = card.grid_size()[1]
         tk.Label(card, text="Signed in as", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
             row=r, column=0, sticky="e", padx=(0, 8), pady=4)
@@ -427,9 +432,10 @@ class SettingsPage(tk.Frame):
         row = tk.Frame(card, bg=p.card)
         row.grid(row=r, column=1, sticky="w", pady=(2, 4))
         button(row, "Sign in", self.cloud_signin, "primary").pack(side="left")
+        button(row, "Create account", self.cloud_create_acct, "outline").pack(side="left", padx=(8, 0))
         button(row, "Sign out", self.cloud_signout, "secondary-outline").pack(side="left", padx=(8, 0))
 
-        self._section(card, "Shop")
+        self._section(card, "STEP 3 - YOUR SHOP")
         r = card.grid_size()[1]
         tk.Label(card, text="Current shop", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
             row=r, column=0, sticky="e", padx=(0, 8), pady=4)
@@ -457,14 +463,28 @@ class SettingsPage(tk.Frame):
         tb.Checkbutton(srow, text="Auto-sync every 30s", variable=self.cloud_auto, bootstyle="round-toggle",
                        command=self.cloud_toggle_auto).pack(side="left", padx=(14, 0))
 
-        self._section(card, "Team (owner only) - add employees who can sign in on their own PC")
+        self._section(card, "STEP 4 - INVITE EMPLOYEES (one code, no keys)")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Invite code", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        irow = tk.Frame(card, bg=p.card)
+        irow.grid(row=r, column=1, columnspan=4, sticky="w", pady=4)
+        button(irow, "Copy invite code", self.cloud_copy_invite, "primary").pack(side="left")
+        tk.Label(card, text="Send that one code to your employee (WhatsApp, email...). On their PC they open the app, "
+                            "click 'Join a shop' on the login screen, paste the code and pick their own email + "
+                            "password. That is the whole setup for them.",
+                 font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=560, justify="left").grid(
+            row=r + 1, column=1, columnspan=4, sticky="w", pady=(0, 6))
+
+        self._section(card, "ADVANCED (optional) - service_role key tools")
         r = card.grid_size()[1]
         tk.Label(card, text="Service key", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
             row=r, column=0, sticky="e", padx=(0, 8), pady=4)
         self.cloud_service = tk.StringVar(value="" if not self.app.db.get_secret("service_key") else "********")
         tb.Entry(card, textvariable=self.cloud_service, width=40, show="*").grid(row=r, column=1, sticky="w", pady=4)
         button(card, "Save key", self.cloud_save_service, "secondary-outline").grid(row=r, column=2, sticky="w", padx=(8, 0))
-        tk.Label(card, text="Supabase -> Project Settings -> API Keys -> service_role. Stored only on this (owner) PC.",
+        tk.Label(card, text="Not needed for invites. Only for pre-creating accounts / resetting employee passwords. "
+                            "Supabase -> Project Settings -> API Keys -> service_role. Stays on this (owner) PC.",
                  font=p.fonts["small"], bg=p.card, fg=p.muted).grid(row=r + 1, column=1, columnspan=4, sticky="w")
         r = card.grid_size()[1]
         row = tk.Frame(card, bg=p.card)
@@ -500,6 +520,16 @@ class SettingsPage(tk.Frame):
         if email and not self.cloud_email.get():
             self.cloud_email.set(email)
         self.cloud_shop_lbl.configure(text=self.app.settings.get("cloud_shop_name") or "(none selected)")
+        if hasattr(self, "cloud_hint"):
+            if not models.cloud_configured(db):
+                nxt = "Next: STEP 1 - paste the Project URL + anon key and press Connect & check."
+            elif not models.cloud_token(db):
+                nxt = "Next: STEP 2 - sign in (or press Create account)."
+            elif not models.cloud_shop_id(db):
+                nxt = "Next: STEP 3 - type a shop name and press Create shop."
+            else:
+                nxt = "All set. Copy the invite code (STEP 4) for each employee - sync runs by itself."
+            self.cloud_hint.configure(text=nxt)
 
     def _cloud_busy(self, msg):
         self.cloud_status.configure(text=msg, fg=self.app.palette.muted)
@@ -507,13 +537,27 @@ class SettingsPage(tk.Frame):
 
     def cloud_test(self):
         self._persist_cloud_conf()
-        self._cloud_busy("Testing...")
+        role = cloud.key_role(self.vars["cloud_anon_key"].get())
+        if role == "service_role":
+            self.cloud_status.configure(text="That is the SECRET service_role key! Paste the anon public key here "
+                                             "(Supabase -> Project Settings -> API Keys -> anon public).",
+                                        fg=self.app.palette.danger)
+            return
+        self._cloud_busy("Checking...")
         try:
-            models.cloud_client(self.app.db).test_connection()
+            sb = models.cloud_client(self.app.db)
+            sb.test_connection()
+            ready = sb.db_ready()
         except Exception as e:
             self.cloud_status.configure(text="Failed: " + str(e), fg=self.app.palette.danger)
             return
-        self.cloud_status.configure(text="Connected OK", fg=self.app.palette.success)
+        if not ready:
+            self.cloud_status.configure(text="Connected, but the database is not set up yet. Click 'Copy setup SQL', "
+                                             "then 'Open SQL editor', paste (Ctrl+V), press Run - then Connect & check "
+                                             "again.", fg=self.app.palette.danger)
+            return
+        self.cloud_status.configure(text="Connected - database ready. Next: step 2.", fg=self.app.palette.success)
+        self._cloud_refresh_labels()
 
     def cloud_signin(self):
         self._persist_cloud_conf()
@@ -579,6 +623,11 @@ class SettingsPage(tk.Frame):
 
     def cloud_save_service(self):
         v = self.cloud_service.get().strip()
+        if v and v != "********" and cloud.key_role(v) == "anon":
+            self.cloud_status.configure(text="That is the anon PUBLIC key - the service_role key is the other one "
+                                             "(Project Settings -> API Keys -> service_role secret).",
+                                        fg=self.app.palette.danger)
+            return
         if v and v != "********":
             self.app.db.set_secret("service_key", v)
             self.cloud_service.set("********")
@@ -611,7 +660,55 @@ class SettingsPage(tk.Frame):
             self.cloud_members.insert("1.0", "(no team members yet)")
             return
         for m in members:
-            self.cloud_members.insert("end", f"{m.get('role', ''):10s}  {m.get('user_id', '')}\n")
+            self.cloud_members.insert("end", f"{m.get('role', ''):10s}  {m.get('email') or m.get('user_id', '')}\n")
+
+    def cloud_copy_sql(self):
+        from utils import resource_path
+        try:
+            with open(resource_path("SUPABASE_SETUP.sql"), "r", encoding="utf-8") as fh:
+                sql = fh.read()
+        except Exception as e:
+            self.cloud_status.configure(text="Could not load the SQL file: " + str(e), fg=self.app.palette.danger)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(sql)
+        self.cloud_status.configure(text="Setup SQL copied. Now click 'Open SQL editor', paste (Ctrl+V) and press Run.",
+                                    fg=self.app.palette.success)
+
+    def cloud_open_sql(self):
+        import re as _re
+        import webbrowser
+        m = _re.match(r"https?://([a-z0-9-]+)\.supabase\.", self.vars["cloud_url"].get().strip())
+        webbrowser.open(f"https://supabase.com/dashboard/project/{m.group(1)}/sql/new" if m
+                        else "https://supabase.com/dashboard")
+
+    def cloud_create_acct(self):
+        self._persist_cloud_conf()
+        self._cloud_busy("Creating account...")
+        try:
+            out = models.cloud_create_account(self.app.db, self.cloud_email.get(), self.cloud_pw.get())
+        except Exception as e:
+            self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        if out == "confirm":
+            self.cloud_status.configure(text="Account created - open the confirmation email Supabase sent you, click "
+                                             "the link, then press Sign in.", fg=self.app.palette.danger)
+        else:
+            self.cloud_pw.set("")
+            self.cloud_status.configure(text="Account created & signed in. Next: step 3.", fg=self.app.palette.success)
+        self._cloud_refresh_labels()
+
+    def cloud_copy_invite(self):
+        self._cloud_busy("Building invite code...")
+        try:
+            code = models.cloud_invite_text(self.app.db)
+        except Exception as e:
+            self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(code)
+        self.cloud_status.configure(text="Invite code copied - send it to your employee (WhatsApp, email...).",
+                                    fg=self.app.palette.success)
 
     def cloud_sync_now(self):
         import threading

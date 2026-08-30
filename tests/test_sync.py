@@ -106,5 +106,44 @@ class SyncPhaseBTests(unittest.TestCase):
         self.assertEqual([c["phone"] for c in models.list_customers(b_app.db)][0], "999")
 
 
+class InviteTests(unittest.TestCase):
+    def _code(self):
+        import base64
+        import json
+        payload = {"u": "https://x.supabase.co", "k": "anonkey", "s": "S1", "c": "C1", "n": "My Shop"}
+        return "SHOP-" + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+    def test_invite_roundtrip_and_bad(self):
+        d = models.cloud_parse_invite("  " + self._code() + "\n")
+        self.assertEqual((d["u"], d["s"], d["c"], d["n"]),
+                         ("https://x.supabase.co", "S1", "C1", "My Shop"))
+        with self.assertRaises(Exception):
+            models.cloud_parse_invite("SHOP-notbase64!!!")
+
+    def test_join_invite_creates_local_employee(self):
+        db = dbmod.Database(os.path.join(tempfile.mkdtemp(), "e.db"))
+
+        class FakeAuth:
+            def sign_in(self, e, p):
+                raise Exception("400: Invalid login credentials")
+
+            def sign_up(self, e, p, m=None):
+                return {"access_token": "t", "refresh_token": "r", "user": {"id": "u9", "email": e}}
+
+            def rpc(self, fn, tok, params=None):
+                assert fn == "join_shop" and params == {"p_shop": "S1", "p_code": "C1"}
+                return "employee"
+
+        orig = models.cloud_client
+        models.cloud_client = lambda _db: FakeAuth()
+        try:
+            u = models.cloud_join_invite(db, self._code(), "emp@x.com", "secret7", "Emp One")
+        finally:
+            models.cloud_client = orig
+        self.assertEqual(u["role"], "employee")
+        self.assertTrue(models.authenticate(db, "emp@x.com", "secret7"))
+        self.assertEqual(db.get_setting("cloud_shop_id", ""), "S1")
+
+
 if __name__ == "__main__":
     unittest.main()

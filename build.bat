@@ -12,6 +12,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name InvoiceApp
   --icon appicon.ico ^
   --version-file version_info.txt ^
   --add-data "appicon.ico;." ^
+  --add-data "SUPABASE_SETUP.sql;." ^
   --collect-data ttkbootstrap ^
   --hidden-import PIL._tkinter_finder ^
   --exclude-module numpy --exclude-module pandas --exclude-module matplotlib --exclude-module scipy ^

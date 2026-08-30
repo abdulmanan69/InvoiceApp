@@ -16,6 +16,25 @@ class CloudError(Exception):
     """A user-facing cloud problem (network down, wrong key, auth failed, ...)."""
 
 
+def key_role(key: str) -> str:
+    """Best-effort role baked into a Supabase API key: 'anon', 'service_role' or '' if unknown.
+    Lets the UI catch the classic mistake of pasting the secret key where the anon key goes."""
+    k = (key or "").strip()
+    if k.startswith("sb_publishable_"):
+        return "anon"
+    if k.startswith("sb_secret_"):
+        return "service_role"
+    parts = k.split(".")
+    if len(parts) == 3:
+        try:
+            import base64
+            pad = parts[1] + "=" * (-len(parts[1]) % 4)
+            return json.loads(base64.urlsafe_b64decode(pad)).get("role", "")
+        except Exception:
+            return ""
+    return ""
+
+
 def _request(method: str, url: str, headers: dict, body=None, timeout: float = 15.0):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
@@ -76,6 +95,26 @@ class Supabase:
         if not data or "access_token" not in data:
             raise CloudError("Sign in failed - wrong email or password.")
         return data
+
+    def sign_up(self, email: str, password: str, metadata: dict | None = None) -> dict:
+        """Create a new auth account. Returns a session dict if the project auto-confirms emails,
+        otherwise a bare user record (the person must click the confirmation email first)."""
+        _, data = _request("POST", f"{self.url}/auth/v1/signup",
+                           {"apikey": self.anon, "Content-Type": "application/json"},
+                           {"email": email, "password": password, "data": metadata or {}})
+        return data or {}
+
+    def db_ready(self) -> bool:
+        """True when SUPABASE_SETUP.sql has been run (the shops table answers)."""
+        try:
+            _request("GET", f"{self.url}/rest/v1/shops?select=id&limit=1",
+                     {"apikey": self.anon, "Authorization": f"Bearer {self.anon}"})
+            return True
+        except CloudError as e:
+            m = str(e)
+            if "PGRST205" in m or "does not exist" in m or "Could not find the table" in m or m.startswith("404"):
+                return False
+            raise
 
     def refresh(self, refresh_token: str) -> dict:
         _, data = _request("POST", f"{self.url}/auth/v1/token?grant_type=refresh_token",

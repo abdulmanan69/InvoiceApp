@@ -76,21 +76,21 @@ class JoinShopDialog(_CenteredDialog):
         super().__init__(parent, app, "Join a shop", width=540)
         p = app.palette
         tk.Label(self.body, text="Join your shop", font=p.fonts["title"], bg=p.bg, fg=p.fg, anchor="w").pack(fill="x")
-        tk.Label(self.body, text="Enter the details your owner gave you. The app signs you in, downloads your\n"
-                                 "shop's data, and keeps it synced. It works offline afterwards.",
+        tk.Label(self.body, text="Paste the invite code your owner sent you, then pick your own email and password.\n"
+                                 "The app connects, joins the shop and keeps your data synced (works offline too).",
                  font=p.fonts["base"], bg=p.bg, fg=p.muted, justify="left", anchor="w").pack(fill="x", pady=(4, 14))
         box = tk.Frame(self.body, bg=p.bg)
         box.pack(fill="x")
         self.form = Form(box, app, columns=1, label_width=16)
-        self.form.entry("Project URL *", "url", app.db.get_setting("cloud_url", ""))
-        self.form.entry("Anon key *", "anon", app.db.get_setting("cloud_anon_key", ""))
+        self.form.entry("Invite code *", "code")
+        self.form.entry("Your name", "full_name")
         self.form.entry("Your email *", "email")
-        self.form.entry("Your password *", "password", show="*")
+        self.form.entry("Choose a password *", "password", show="*")
         self.message = tk.Label(self.body, text="", font=p.fonts["small"], bg=p.bg, fg=p.muted, anchor="w",
                                 wraplength=490, justify="left")
         self.message.pack(fill="x", pady=(6, 0))
         self.buttons("Join shop", self.join, cancel_text="Back")
-        self.form.widgets["email"].focus_set()
+        self.form.widgets["code"].focus_set()
         self.bind("<Return>", lambda e: self.join())
 
     def join(self):
@@ -98,7 +98,7 @@ class JoinShopDialog(_CenteredDialog):
         self.message.configure(text="Joining... signing in and downloading your data.", fg=self.app.palette.muted)
         self.update_idletasks()
         try:
-            user = models.cloud_join(self.app.db, d["url"], d["anon"], d["email"], d["password"])
+            user = models.cloud_join_invite(self.app.db, d["code"], d["email"], d["password"], d["full_name"])
         except Exception as e:
             self.message.configure(text=str(e), fg=self.app.palette.danger)
             return

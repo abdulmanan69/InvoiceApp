@@ -1444,8 +1444,12 @@ def cloud_add_employee(db: Database, email: str, password: str, role: str = ROLE
         except Exception:
             pass
     # attach membership (upsert so re-adding just updates the role, never errors)
-    sb.upsert("members", tok, [{"user_id": user["id"], "shop_id": shop_id, "role": role}],
-              on_conflict="user_id,shop_id")
+    row = {"user_id": user["id"], "shop_id": shop_id, "role": role, "email": email}
+    try:
+        sb.upsert("members", tok, [row], on_conflict="user_id,shop_id")
+    except Exception:
+        row.pop("email", None)      # older database without the email column
+        sb.upsert("members", tok, [row], on_conflict="user_id,shop_id")
     db.log("cloud", f"Added cloud {role} {email}", "cloud", None)
     return user
 
@@ -1461,32 +1465,127 @@ def cloud_my_role(db: Database) -> str:
     return ""
 
 
-def cloud_join(db: Database, url: str, anon_key: str, email: str, password: str) -> dict:
-    """Employee onboarding on a fresh PC: configure cloud, sign in, link the shop, and create (or
-    refresh) a matching LOCAL account so the person can log into the app - as the same role the owner
-    gave them - and have their data sync. Returns the local user row."""
-    url, anon_key, email = _clean(url), _clean(anon_key), _clean(email)
-    if not url or not anon_key:
-        raise ValidationError("Enter the Project URL and the anon key (ask the owner for these).")
-    db.set_settings({"cloud_url": url, "cloud_anon_key": anon_key, "cloud_enabled": "1"})
-    cloud_sign_in(db, email, password)                    # stores session; auto-links a single shop
-    if not cloud_shop_id(db):
-        shops = cloud_list_shops(db)
-        if not shops:
-            raise ValidationError("Your account is not added to any shop yet. Ask the owner to add your "
-                                  "email under Settings > Cloud sync > Team.")
-        cloud_link_shop(db, shops[0]["id"], shops[0].get("name", ""))
-    role = cloud_my_role(db) or ROLE_EMPLOYEE
-    meta = cloud_user(db).get("user_metadata") or {}
-    full_name = _clean(meta.get("full_name")) or email.split("@")[0]
+def _cloud_local_account(db: Database, email: str, password: str, role: str, full_name: str) -> dict:
+    """Create or refresh the LOCAL app account matching a cloud login, so the person can open the
+    app with the same email + password even when offline."""
     existing = db.query_one("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (email,))
     if existing:
         update_user(db, existing["id"], full_name=full_name, role=role, active=True, password=password)
         uid = existing["id"]
     else:
         uid = create_user(db, email, password, role, full_name)
-    db.log("cloud", f"Joined cloud shop as {role} ({email})", "cloud", None)
     return get_user(db, uid)
+
+
+def cloud_parse_invite(text: str) -> dict:
+    """Decode a SHOP- invite code back into its parts {u: url, k: anon key, s: shop id, c: secret, n: name}."""
+    import base64
+    import json as _json
+    t = "".join((text or "").split())
+    if t.upper().startswith("SHOP-"):
+        t = t[5:]
+    try:
+        d = _json.loads(base64.urlsafe_b64decode(t + "=" * (-len(t) % 4)))
+        if not (d.get("u") and d.get("k") and d.get("s") and d.get("c")):
+            raise ValueError
+        return d
+    except Exception:
+        raise ValidationError("That invite code is not valid. Ask the owner to copy it again "
+                              "(Settings > Cloud sync > Copy invite code).")
+
+
+def cloud_invite_text(db: Database) -> str:
+    """Build the ONE code an owner shares with an employee: URL + anon key + shop id + join secret,
+    packed into a single SHOP-... string. Contains no owner passwords and no service key."""
+    import base64
+    import json as _json
+    if not (cloud_configured(db) and cloud_token(db) and cloud_shop_id(db)):
+        raise ValidationError("Finish steps 1-3 first (connect, sign in and create your shop).")
+    sb = cloud_client(db)
+    shop = cloud_shop_id(db)
+    try:
+        code = sb.rpc("get_invite", cloud_token(db), {"p_shop": shop})
+    except Exception:
+        tok = cloud_refresh(db)
+        if not tok:
+            raise
+        code = sb.rpc("get_invite", tok, {"p_shop": shop})
+    if isinstance(code, list):
+        code = code[0] if code else ""
+    if not code:
+        raise ValidationError("Could not get the invite code - re-run SUPABASE_SETUP.sql once "
+                              "(it adds the invite system), then try again.")
+    payload = {"u": _clean(db.get_setting("cloud_url", "")), "k": _clean(db.get_setting("cloud_anon_key", "")),
+               "s": shop, "c": code, "n": db.get_setting("cloud_shop_name", "")}
+    raw = base64.urlsafe_b64encode(_json.dumps(payload).encode("utf-8")).decode("ascii").rstrip("=")
+    return "SHOP-" + raw
+
+
+def cloud_join_invite(db: Database, code: str, email: str, password: str, full_name: str = "") -> dict:
+    """Employee onboarding with ONE code: configure the cloud from it, sign in (creating the account
+    if it does not exist yet - the employee picks their own password), join the shop via its invite
+    secret, link it, and set up the matching local login. Returns the local user row."""
+    info = cloud_parse_invite(code)
+    email = _clean(email)
+    if not email or "@" not in email:
+        raise ValidationError("Enter a valid email address.")
+    if len(password or "") < 6:
+        raise ValidationError("Choose a password of at least 6 characters.")
+    db.set_settings({"cloud_url": info["u"], "cloud_anon_key": info["k"], "cloud_enabled": "1"})
+    sb = cloud_client(db)
+    sess = None
+    try:
+        sess = sb.sign_in(email, password)
+    except Exception as e:
+        if "invalid" not in str(e).lower() and "credentials" not in str(e).lower():
+            raise
+    if sess is None:
+        try:
+            data = sb.sign_up(email, password, {"full_name": _clean(full_name)})
+        except Exception as e:
+            if "already" in str(e).lower():
+                raise ValidationError("This email already has an account, but the password you typed does not "
+                                      "match it. Use your existing password.")
+            raise
+        if data.get("access_token"):
+            sess = data
+        elif data.get("id") or data.get("user"):
+            raise ValidationError("Account created! Supabase sent you a confirmation email - open it, click "
+                                  "the link, then come back and press Join shop again.")
+        else:
+            raise ValidationError("Could not sign in or create the account. Check the email and password.")
+    db.set_secret("session", {"access_token": sess.get("access_token"),
+                              "refresh_token": sess.get("refresh_token"), "user": sess.get("user", {})})
+    role = sb.rpc("join_shop", sess.get("access_token"), {"p_shop": info["s"], "p_code": info["c"]})
+    if isinstance(role, list):
+        role = role[0] if role else ""
+    role = role or ROLE_EMPLOYEE
+    cloud_link_shop(db, info["s"], info.get("n", ""))
+    db.log("cloud", f"Joined cloud shop via invite as {role} ({email})", "cloud", None)
+    return _cloud_local_account(db, email, password, role, _clean(full_name) or email.split("@")[0])
+
+
+def cloud_create_account(db: Database, email: str, password: str) -> str:
+    """Owner convenience: create the cloud auth account from inside the app (no dashboard visit).
+    Returns 'ok' (account made and signed in) or 'confirm' (must click the confirmation email first)."""
+    email = _clean(email)
+    if not email or "@" not in email:
+        raise ValidationError("Enter a valid email address.")
+    if len(password or "") < 6:
+        raise ValidationError("Choose a password of at least 6 characters.")
+    try:
+        data = cloud_client(db).sign_up(email, password, {})
+    except Exception as e:
+        if "already" in str(e).lower():
+            raise ValidationError("This email already has an account - press Sign in instead.")
+        raise
+    if data.get("access_token"):
+        db.set_secret("session", {"access_token": data.get("access_token"),
+                                  "refresh_token": data.get("refresh_token"), "user": data.get("user", {})})
+        return "ok"
+    if data.get("id") or data.get("user"):
+        return "confirm"
+    raise ValidationError("Could not create the account (maybe it already exists - try Sign in).")
 
 
 def cloud_list_members(db: Database) -> list[dict]:
@@ -1494,9 +1593,14 @@ def cloud_list_members(db: Database) -> list[dict]:
     shop_id = db.get_setting("cloud_shop_id", "")
     if not tok or not shop_id:
         return []
-    return cloud_client(db).select("members", tok,
-                                   {"select": "user_id,role,created_at", "shop_id": f"eq.{shop_id}",
-                                    "order": "created_at.asc"})
+    try:
+        return cloud_client(db).select("members", tok,
+                                       {"select": "user_id,role,email,created_at", "shop_id": f"eq.{shop_id}",
+                                        "order": "created_at.asc"})
+    except Exception:
+        return cloud_client(db).select("members", tok,
+                                       {"select": "user_id,role,created_at", "shop_id": f"eq.{shop_id}",
+                                        "order": "created_at.asc"})
 
 
 # =========================================================================== bulk product import

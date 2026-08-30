@@ -20,9 +20,11 @@ create table if not exists public.members (
     user_id uuid not null,
     shop_id uuid not null references public.shops(id) on delete cascade,
     role    text not null default 'employee',
+    email   text not null default '',
     created_at timestamptz not null default now(),
     primary key (user_id, shop_id)
 );
+alter table public.members add column if not exists email text not null default '';
 
 -- helper: the set of shop ids the current user belongs to.
 -- SECURITY DEFINER so it reads members WITHOUT re-triggering members' own RLS policies
@@ -136,11 +138,59 @@ begin
         raise exception 'not signed in';
     end if;
     insert into public.shops(name, created_by) values (p_name, auth.uid()) returning * into s;
-    insert into public.members(user_id, shop_id, role) values (auth.uid(), s.id, 'owner')
+    insert into public.members(user_id, shop_id, role, email)
+        values (auth.uid(), s.id, 'owner', coalesce(auth.jwt() ->> 'email', ''))
         on conflict (user_id, shop_id) do update set role = 'owner';
     return s;
 end $$;
 grant execute on function public.create_shop(text) to authenticated;
+
+-- ---- invite codes: employees join with ONE code, no keys, no owner service key ----
+-- The code secret lives in shop_codes, which has RLS enabled and NO policies, so the API can
+-- never read it directly; only these SECURITY DEFINER functions touch it.
+create table if not exists public.shop_codes (
+    shop_id uuid primary key references public.shops(id) on delete cascade,
+    code    text not null
+);
+alter table public.shop_codes enable row level security;
+
+-- owner asks for the shop's invite secret (created on first use)
+create or replace function public.get_invite(p_shop uuid)
+returns text language plpgsql security definer set search_path = public as $$
+declare c text;
+begin
+    if not exists (select 1 from public.members
+                   where user_id = auth.uid() and shop_id = p_shop and role = 'owner') then
+        raise exception 'only the shop owner can get the invite code';
+    end if;
+    select code into c from public.shop_codes where shop_id = p_shop;
+    if c is null then
+        c := encode(gen_random_bytes(9), 'hex');
+        insert into public.shop_codes(shop_id, code) values (p_shop, c)
+            on conflict (shop_id) do update set code = excluded.code;
+    end if;
+    return c;
+end $$;
+grant execute on function public.get_invite(uuid) to authenticated;
+
+-- a signed-in user presents the code and becomes an employee of that shop
+create or replace function public.join_shop(p_shop uuid, p_code text)
+returns text language plpgsql security definer set search_path = public as $$
+declare r text;
+begin
+    if auth.uid() is null then
+        raise exception 'not signed in';
+    end if;
+    if not exists (select 1 from public.shop_codes where shop_id = p_shop and code = p_code) then
+        raise exception 'invalid invite code - ask the owner to copy it again';
+    end if;
+    insert into public.members(user_id, shop_id, role, email)
+        values (auth.uid(), p_shop, 'employee', coalesce(auth.jwt() ->> 'email', ''))
+        on conflict (user_id, shop_id) do update set email = excluded.email
+        returning role into r;
+    return r;
+end $$;
+grant execute on function public.join_shop(uuid, text) to authenticated;
 
 -- Done. In the app: Settings -> Cloud sync -> paste Project URL + anon key,
 -- sign in, create your shop, then add employees under Team.
