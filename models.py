@@ -1337,19 +1337,40 @@ def cloud_ready(db: Database) -> bool:
     return cloud_enabled(db) and cloud_configured(db) and bool(cloud_token(db)) and bool(cloud_shop_id(db))
 
 
+_refresh_lock = __import__("threading").Lock()
+
+
 def cloud_refresh(db: Database) -> str:
-    """Exchange the stored refresh token for a fresh access token (used when one expires)."""
-    sess = cloud_session(db)
-    rt = sess.get("refresh_token")
-    if not rt:
+    """Exchange the stored refresh token for a fresh access token. Serialized behind a lock and
+    re-reading the stored session, because Supabase ROTATES refresh tokens: when the background sync
+    and the UI both refreshed with the same (already-rotated) token, the loser got
+    '400 Invalid Refresh Token: Refresh Token Not Found'. Returns '' if a re-sign-in is needed."""
+    with _refresh_lock:
+        sess = cloud_session(db)
+        rt = sess.get("refresh_token")
+        if not rt:
+            return ""
+        try:
+            data = cloud_client(db).refresh(rt)
+        except Exception as e:
+            msg = str(e).lower()
+            if "refresh token" not in msg and "invalid" not in msg:
+                return ""
+            latest = cloud_session(db)          # another thread may have stored a fresh pair meanwhile
+            if latest.get("refresh_token") and latest.get("refresh_token") != rt:
+                try:
+                    data = cloud_client(db).refresh(latest["refresh_token"])
+                except Exception:
+                    return ""
+                sess = latest
+            else:
+                return ""
+        if data.get("access_token"):
+            db.set_secret("session", {"access_token": data.get("access_token"),
+                                      "refresh_token": data.get("refresh_token") or sess.get("refresh_token"),
+                                      "user": data.get("user") or sess.get("user", {})})
+            return data.get("access_token")
         return ""
-    data = cloud_client(db).refresh(rt)
-    if data.get("access_token"):
-        db.set_secret("session", {"access_token": data.get("access_token"),
-                                  "refresh_token": data.get("refresh_token", rt),
-                                  "user": data.get("user") or sess.get("user", {})})
-        return data.get("access_token")
-    return ""
 
 
 def cloud_sign_in(db: Database, email: str, password: str) -> dict:
@@ -1447,9 +1468,20 @@ def cloud_add_employee(db: Database, email: str, password: str, role: str = ROLE
     row = {"user_id": user["id"], "shop_id": shop_id, "role": role, "email": email}
     try:
         sb.upsert("members", tok, [row], on_conflict="user_id,shop_id")
-    except Exception:
-        row.pop("email", None)      # older database without the email column
-        sb.upsert("members", tok, [row], on_conflict="user_id,shop_id")
+    except Exception as e:
+        msg = str(e).lower()
+        if "email" in msg and "column" in msg:
+            row.pop("email", None)              # older database without the email column
+            sb.upsert("members", tok, [row], on_conflict="user_id,shop_id")
+        elif "row-level security" in msg:
+            # the row already exists and the database lacks the members update policy - if the
+            # person is already a member of this shop, that is success, not failure
+            have = sb.select("members", tok, {"select": "user_id", "shop_id": f"eq.{shop_id}",
+                                              "user_id": f"eq.{user['id']}"})
+            if not have:
+                raise
+        else:
+            raise
     db.log("cloud", f"Added cloud {role} {email}", "cloud", None)
     return user
 
@@ -1508,7 +1540,8 @@ def cloud_invite_text(db: Database) -> str:
     except Exception:
         tok = cloud_refresh(db)
         if not tok:
-            raise
+            raise ValidationError("Your cloud session has expired - go to STEP 2, press Sign in, "
+                                  "then copy the invite code again.")
         code = sb.rpc("get_invite", tok, {"p_shop": shop})
     if isinstance(code, list):
         code = code[0] if code else ""

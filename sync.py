@@ -116,6 +116,7 @@ class SyncEngine:
                 new = models.cloud_refresh(self.db)
                 if new:
                     return fn(new)
+                raise CloudError("Cloud session expired - open Settings > Cloud sync and press Sign in again.")
             raise
 
     def _business_cols(self, table: str) -> list[str]:

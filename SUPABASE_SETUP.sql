@@ -86,6 +86,12 @@ create policy members_self_insert on public.members for insert
 drop policy if exists members_owner_manage on public.members;
 create policy members_owner_manage on public.members for delete
     using (shop_id in (select public.my_owner_shop_ids()));
+-- upserts hit the UPDATE path when the membership already exists - without this policy that
+-- second "Add employee" click failed with 403 (USING expression)
+drop policy if exists members_owner_update on public.members;
+create policy members_owner_update on public.members for update
+    using (user_id = auth.uid() or shop_id in (select public.my_owner_shop_ids()))
+    with check (user_id = auth.uid() or shop_id in (select public.my_owner_shop_ids()));
 
 do $$
 declare t text;
