@@ -79,10 +79,32 @@ profit; users, roles and password checks; bad-number safety.
 build.bat
 ```
 
-Installs dependencies, runs the tests, runs PyInstaller (`--onefile --windowed`) and copies
-`InvoiceApp.exe` to the project root. Copy that one file anywhere; it creates `data\` beside
-itself on first launch (put it in a folder you can write to, not Program Files). SmartScreen may
-warn about an unsigned exe — *More info → Run anyway*.
+Installs dependencies, runs the tests, runs PyInstaller (`--onefile --windowed`, with the app
+icon and version details baked in) and copies `InvoiceApp.exe` to the project root. Copy that one
+file anywhere; it stores its data in a `data\` folder next to itself, or in
+`%LOCALAPPDATA%\InvoiceApp` when that folder is read-only.
+
+## Build the Windows installer
+
+```bat
+build.bat
+build_installer.bat
+```
+
+`build_installer.bat` uses **Inno Setup 6** (install once with `winget install JRSoftware.InnoSetup`)
+and produces `dist\InvoiceApp-Setup.exe`. Share that single file — double-clicking it installs
+InvoiceApp per-user (no admin prompt), adds Start-menu and optional desktop shortcuts, and
+registers an uninstaller in *Add or remove programs*.
+
+## "Windows protected your PC" / "app not safe to run"
+
+This appears for **any** program that is not signed with a paid code-signing certificate — it is
+about the signature, not about the app being unsafe. To run it: **More info → Run anyway** (the
+installer shows the same, click **More info → Run anyway**). The warning fades on its own once the
+file builds reputation. Baking in the icon and version info (done here) and using the installer
+make it less alarming. To remove it completely you need an OV/EV code-signing certificate
+(a paid, yearly purchase from a certificate authority); once you have one, sign both
+`InvoiceApp.exe` and `InvoiceApp-Setup.exe` with `signtool sign /fd SHA256 /a ...`.
 
 ## Project layout
 
