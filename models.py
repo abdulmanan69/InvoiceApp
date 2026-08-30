@@ -1290,3 +1290,119 @@ def export_csv(path: str, headers: list[str], rows: list[list]) -> None:
         w.writerow(headers)
         for r in rows:
             w.writerow(["" if v is None else v for v in r])
+
+
+# =========================================================================== bulk product import
+PRODUCT_CSV_HEADERS = ["name", "sku", "unit", "sale_price", "cost_price", "tax_rate", "description",
+                       "opening_stock", "low_stock_level", "track_stock", "active"]
+_PRODUCT_ALIASES = {
+    "name": ("name", "product", "product_name", "item", "title"),
+    "sku": ("sku", "code", "sku/code", "item_code", "barcode"),
+    "unit": ("unit", "uom"),
+    "sale_price": ("sale_price", "unit_price", "price", "selling_price", "rate"),
+    "cost_price": ("cost_price", "cost", "purchase_price", "buy_price"),
+    "tax_rate": ("tax_rate", "tax", "tax_%", "tax_percent", "gst"),
+    "description": ("description", "desc", "details"),
+    "opening_stock": ("opening_stock", "stock", "qty", "quantity", "opening_qty", "in_stock"),
+    "low_stock_level": ("low_stock_level", "low_stock", "reorder_level", "alert_at", "min_stock"),
+    "track_stock": ("track_stock", "track"),
+    "active": ("active", "enabled"),
+}
+
+
+def products_csv_template(path: str) -> None:
+    """Write a ready-to-fill product import sheet with two example rows."""
+    import csv
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh)
+        w.writerow(PRODUCT_CSV_HEADERS)
+        w.writerow(["Wireless Mouse", "MSE-01", "pcs", "850", "600", "", "Optical USB mouse", "50", "5", "1", "1"])
+        w.writerow(["Consulting", "SVC-01", "hr", "5000", "0", "0", "Hourly consulting", "", "", "0", "1"])
+
+
+def _bool(v, default=1):
+    s = str(v).strip().lower()
+    if s in ("1", "yes", "y", "true", "t"):
+        return 1
+    if s in ("0", "no", "n", "false", "f"):
+        return 0
+    return default
+
+
+def import_products_csv(db: Database, path: str) -> dict:
+    """Create or update products from a CSV. Matches an existing product by SKU (if given) else by name.
+    Returns {created, updated, skipped, errors:[...]} and never raises on a bad row."""
+    import csv
+    created = updated = skipped = 0
+    errors: list[str] = []
+    with open(path, "r", newline="", encoding="utf-8-sig") as fh:
+        sample = fh.read(4096)
+        fh.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(fh, dialect=dialect)
+        if not reader.fieldnames:
+            raise ValidationError("The file is empty or is not a CSV.")
+        header_map = {}
+        for raw in reader.fieldnames:
+            key = (raw or "").strip().lower().replace(" ", "_")
+            for field, aliases in _PRODUCT_ALIASES.items():
+                if key in aliases:
+                    header_map[raw] = field
+                    break
+        if "name" not in header_map.values():
+            raise ValidationError("The CSV needs at least a 'name' column. Use the template as a guide.")
+        existing = list_products(db)
+        by_sku = {_clean(p["sku"]).lower(): p for p in existing if _clean(p["sku"])}
+        by_name = {_clean(p["name"]).lower(): p for p in existing}
+        for n, raw_row in enumerate(reader, start=2):
+            row = {field: (raw_row.get(raw) or "").strip() for raw, field in header_map.items()}
+            name = row.get("name", "")
+            if not name and not any(row.values()):
+                continue
+            if not name:
+                errors.append(f"Row {n}: missing product name - skipped")
+                skipped += 1
+                continue
+            match = by_sku.get(row["sku"].lower()) if row.get("sku") else None
+            if not match:
+                match = by_name.get(name.lower())
+            data = {
+                "name": name,
+                "sku": row.get("sku", (match or {}).get("sku", "")),
+                "unit": row.get("unit") or (match or {}).get("unit") or "pcs",
+                "unit_price": (row.get("sale_price") or (match or {}).get("unit_price") or 0),
+                "cost_price": (row.get("cost_price") or (match or {}).get("cost_price") or 0),
+                "tax_rate": row.get("tax_rate", "" if not match else ("" if match.get("tax_rate") is None else match.get("tax_rate"))),
+                "description": row.get("description", (match or {}).get("description", "")),
+                "low_stock_level": (row.get("low_stock_level") or (match or {}).get("low_stock_level") or 0),
+                "track_stock": _bool(row.get("track_stock"), (match or {}).get("track_stock", 1)),
+                "active": _bool(row.get("active"), (match or {}).get("active", 1)),
+            }
+            if match:
+                data["id"] = match["id"]
+            elif row.get("opening_stock"):
+                data["opening_stock"] = row["opening_stock"]
+            try:
+                pid = save_product(db, data)
+            except ValidationError as e:
+                errors.append(f"Row {n} ({name}): {e}")
+                skipped += 1
+                continue
+            if match:
+                updated += 1
+                if row.get("opening_stock"):
+                    try:
+                        adjust_stock(db, pid, row["opening_stock"], note="CSV import stock update")
+                    except ValidationError:
+                        pass
+            else:
+                created += 1
+                prod = get_product(db, pid)
+                if _clean(data.get("sku")):
+                    by_sku[_clean(data["sku"]).lower()] = prod
+                by_name[name.lower()] = prod
+    db.log("product", f"Imported products from CSV: {created} new, {updated} updated", "product", None)
+    return {"created": created, "updated": updated, "skipped": skipped, "errors": errors}

@@ -517,6 +517,7 @@ class Dialog(tb.Toplevel):
 
     def __init__(self, parent, app, title: str, width=620, height=None, scrollable: bool = False):
         super().__init__(title=title, transient=parent.winfo_toplevel(), resizable=(True, True))
+        self.withdraw()  # stay hidden until fully built, then reveal in final position (no flicker)
         self.app, self.parent, self.result = app, parent, None
         p = app.palette
         self.configure(bg=p.bg)
@@ -554,6 +555,7 @@ class Dialog(tb.Toplevel):
         y = max(0, (sh - h) // 2 - 20)
         self.geometry(f"{w}x{h}+{x}+{y}")
         self.minsize(min(w, 460), min(h, 240))
+        self.deiconify()
         self.grab_set()
         self.focus_force()
         self.wait_window(self)

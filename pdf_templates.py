@@ -896,7 +896,7 @@ class LedgerTemplate(BaseTemplate):
     min_item_rows = 12
     header_first = 44 * mm
     header_later = 20 * mm
-    footer = 26 * mm
+    footer = 30 * mm
     zebra = True
     header_fill = "dark"
     company_size = 20
@@ -919,21 +919,25 @@ class LedgerTemplate(BaseTemplate):
         canv.restoreState()
 
     def draw_footer(self, canv, doc):
+        # everything here sits BELOW the content frame (frame bottom = self.footer), so it never
+        # overlaps the item rows on a full page.
         canv.saveState()
         cx = self.width / 2
-        y = self.footer
         s = self.settings
+        canv.setStrokeColor(self.line)
+        canv.setLineWidth(0.4)
+        canv.line(self.margin, self.footer - 3 * mm, self.width - self.margin, self.footer - 3 * mm)
         canv.setFillColor(self.muted)
         canv.setFont(self.font, 8.5)
-        canv.drawCentredString(cx, y + 8 * mm, f"If you have any questions about this {self.title.lower()}, please contact")
+        canv.drawCentredString(cx, self.footer - 9 * mm, f"If you have any questions about this {self.title.lower()}, please contact")
         who = "   ".join(str(v) for v in (s.get("company_name", ""), s.get("company_phone", "")) if v)
-        canv.drawCentredString(cx, y + 4 * mm, who)
+        canv.drawCentredString(cx, self.footer - 13 * mm, who)
         canv.setFillColor(self.text)
         canv.setFont(self.font_bold, 10.5)
-        canv.drawCentredString(cx, y - 1 * mm, "Thank You For Your Business!")
+        canv.drawCentredString(cx, self.footer - 19 * mm, "Thank You For Your Business!")
         canv.setFillColor(self.muted)
         canv.setFont(self.font, 7.2)
-        canv.drawRightString(self.width - self.margin, y - 7 * mm, f"Page {doc.page}")
+        canv.drawRightString(self.width - self.margin, self.footer - 25 * mm, f"Page {doc.page}")
         canv.restoreState()
 
     def _meta_box(self):

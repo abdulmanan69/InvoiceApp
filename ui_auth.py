@@ -19,6 +19,7 @@ class _CenteredDialog(Dialog):
         x = max(0, (self.winfo_screenwidth() - w) // 2)
         y = max(0, (self.winfo_screenheight() - h) // 2 - 40)
         self.geometry(f"{w}x{h}+{x}+{y}")
+        self.deiconify()
         self.grab_set()
         self.focus_force()
         self.wait_window(self)

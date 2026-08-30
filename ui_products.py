@@ -6,8 +6,8 @@ import tkinter as tk
 import ttkbootstrap as tb
 
 import models
-from ui_common import (Card, DataTable, Dialog, Form, PageHeader, SearchEntry, ask_yes_no, button, fmt_money,
-                       show_error, show_info)
+from ui_common import (Card, DataTable, Dialog, Form, PageHeader, SearchEntry, ask_open_path, ask_save_path,
+                       ask_yes_no, button, fmt_money, show_error, show_info)
 from utils import fmt_number
 
 
@@ -56,6 +56,62 @@ class ProductDialog(Dialog):
         self.close()
 
 
+class ImportProductsDialog(Dialog):
+    """Bulk-add products from a CSV/Excel-exported sheet. Matches by SKU (or name) to update existing ones."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent, app, "Import products from a file", width=640)
+        p = app.palette
+        tk.Label(self.body, text="Add many products at once", font=p.fonts["title"], bg=p.bg, fg=p.fg,
+                 anchor="w").pack(fill="x")
+        steps = ("1.  Click 'Download template' and open it in Excel / Google Sheets.\n"
+                 "2.  Fill one product per row (only 'name' is required).\n"
+                 "3.  Save as CSV, then 'Choose file & import'.\n\n"
+                 "Existing products are matched by SKU (or name) and updated - nothing is duplicated.\n"
+                 "Columns: name, sku, unit, sale_price, cost_price, tax_rate, description, opening_stock,\n"
+                 "low_stock_level, track_stock, active  (extra or missing columns are fine).")
+        tk.Label(self.body, text=steps, font=p.fonts["base"], bg=p.bg, fg=p.muted, anchor="w",
+                 justify="left").pack(fill="x", pady=(8, 12))
+        self.result_lbl = tk.Label(self.body, text="", font=p.fonts["base"], bg=p.bg, fg=p.fg, anchor="w",
+                                   justify="left", wraplength=580)
+        self.result_lbl.pack(fill="x")
+        self.buttons("Choose file & import", self.do_import,
+                     extra=[("Download template", self.download_template, "secondary-outline")], cancel_text="Close")
+
+    def download_template(self):
+        path = ask_save_path(self, "Save product template", "products_template.csv", ".csv", [("CSV files", "*.csv")])
+        if not path:
+            return
+        try:
+            models.products_csv_template(path)
+        except OSError as e:
+            show_error(self, f"Could not write the file:\n{e}")
+            return
+        show_info(self, f"Template saved to:\n{path}\n\nFill it in, save as CSV, then choose it here to import.", "Template ready")
+
+    def do_import(self):
+        path = ask_open_path(self, "Choose a product CSV", [("CSV files", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            res = models.import_products_csv(self.app.db, path)
+        except models.ValidationError as e:
+            show_error(self, str(e), "Cannot import")
+            return
+        except Exception as e:
+            show_error(self, f"Could not read the file:\n{e}", "Cannot import")
+            return
+        msg = f"Done:  {res['created']} added,  {res['updated']} updated"
+        if res["skipped"]:
+            msg += f",  {res['skipped']} skipped"
+        if res["errors"]:
+            msg += "\n\nSome rows were skipped:\n- " + "\n- ".join(res["errors"][:8])
+            if len(res["errors"]) > 8:
+                msg += f"\n... and {len(res['errors']) - 8} more"
+        p = self.app.palette
+        self.result_lbl.configure(text=msg, fg=p.danger if res["errors"] else p.success)
+
+
 class ProductsPage(tk.Frame):
     name = "products"
 
@@ -66,6 +122,8 @@ class ProductsPage(tk.Frame):
         self.owner = app.is_owner
         self.header = PageHeader(self, app, "Products & Services", "Reusable line items with prices and stock tracking")
         self.header.pack(fill="x", padx=28, pady=(24, 12))
+        if self.owner:
+            self.header.button("Import from CSV", self.import_csv, "secondary-outline")
         self.header.button("+ Add product", self.add, "primary")
 
         bar = tk.Frame(self, bg=p.bg)
@@ -134,6 +192,10 @@ class ProductsPage(tk.Frame):
     def add(self):
         if ProductDialog(self, self.app).show():
             self.refresh()
+
+    def import_csv(self):
+        ImportProductsDialog(self, self.app).show()
+        self.app.refresh_all()
 
     def edit(self):
         row = self._selected()

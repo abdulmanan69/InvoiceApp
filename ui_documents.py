@@ -94,10 +94,9 @@ class LineRow:
         self.frame.pack(fill="x", pady=2)
         for c, w in enumerate((1, 6, 1, 1, 2, 1, 2, 0)):
             self.frame.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
-        labels = []
-        for pr in products:
-            stock = f" ({fmt_number(pr.get('stock', 0))} {pr.get('unit') or ''})".rstrip() if pr.get("track_stock") else ""
-            labels.append((pr["id"], f"{pr['name']}{stock}"))
+        labels = getattr(editor, "product_choices", None)
+        if labels is None:
+            labels = [(pr["id"], pr["name"]) for pr in products]
         self.product = IdCombo(self.frame, labels, blank_label="(custom)", width=18)
         self.product.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.product.bind("<<ComboboxSelected>>", self.on_product)
@@ -167,10 +166,19 @@ class DocumentEditor(Dialog):
         self.rows: list[LineRow] = []
         self.products = models.list_products(app.db, active_only=True)
         self.product_map = {pr["id"]: pr for pr in self.products}
+        # product dropdown labels built once (reused by every line row)
+        self.product_choices = [(pr["id"],
+                                 f"{pr['name']} ({fmt_number(pr.get('stock', 0))} {pr.get('unit') or ''})".rstrip()
+                                 if pr.get("track_stock") else pr["name"]) for pr in self.products]
+        # available stock in ONE query (excludes this invoice's own effect when editing) instead of one per product
         self.available: dict[int, float] = {}
-        for pr in self.products:
-            if pr.get("track_stock"):
-                self.available[pr["id"]] = models.stock_level(app.db, pr["id"], ("invoice", doc_id) if doc_id else None)
+        for r in app.db.query("SELECT product_id, COALESCE(SUM(qty), 0) AS q FROM stock_movements GROUP BY product_id"):
+            self.available[r["product_id"]] = r["q"]
+        if doc_id:
+            for r in app.db.query("SELECT product_id, COALESCE(SUM(qty), 0) AS q FROM stock_movements"
+                                  " WHERE ref_type = 'invoice' AND ref_id = ? GROUP BY product_id", (doc_id,)):
+                self.available[r["product_id"]] = self.available.get(r["product_id"], 0) - r["q"]
+        self.available = {pid: v for pid, v in self.available.items() if self.product_map.get(pid, {}).get("track_stock")}
         self.display_options = models.document_display_options(app.db, self.doc or {})
         self._loading = True
 
