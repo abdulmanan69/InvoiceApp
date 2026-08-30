@@ -93,7 +93,7 @@ class LineRow:
         self.frame = tk.Frame(master, bg=p.card)
         self.frame.pack(fill="x", pady=2)
         for c, w in enumerate((1, 6, 1, 1, 2, 1, 2, 0)):
-            self.frame.grid_columnconfigure(c, weight=w, minsize=(48 if w == 0 else 0))
+            self.frame.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
         labels = []
         for pr in products:
             stock = f" ({fmt_number(pr.get('stock', 0))} {pr.get('unit') or ''})".rstrip() if pr.get("track_stock") else ""
@@ -120,7 +120,7 @@ class LineRow:
         self.desc_entry = entries[0]
         self.amount = tk.Label(self.frame, text="", font=p.fonts["bold"], bg=p.card, fg=p.fg, anchor="e", width=14)
         self.amount.grid(row=0, column=6, sticky="ew", padx=(0, 4))
-        tb.Button(self.frame, text="✕", bootstyle="danger-link", command=self.remove, width=3).grid(row=0, column=7)
+        tb.Button(self.frame, text="Remove", bootstyle="danger-outline", command=self.remove, width=8).grid(row=0, column=7, sticky="e")
         if item.get("product_id"):
             self.product.set_id(item["product_id"])
 
@@ -265,14 +265,14 @@ class DocumentEditor(Dialog):
         items = Card(self.body, app, padding=10)
         items.pack(fill="both", expand=True, pady=(8, 0))
         hdr = tk.Frame(items, bg=p.card)
-        hdr.pack(fill="x")
+        hdr.pack(fill="x", padx=(0, 18))
         for c, (text, w, anchor) in enumerate((("Product", 1, "w"), ("Description", 6, "w"), ("Qty", 1, "e"),
                                                ("Unit", 1, "w"), ("Unit price", 2, "e"), ("Tax %", 1, "e"),
-                                               ("Amount", 2, "e"), ("", 0, "w"))):
-            hdr.grid_columnconfigure(c, weight=w, minsize=(48 if w == 0 else 0))
+                                               ("Amount", 2, "e"), ("Action", 0, "e"))):
+            hdr.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
             tk.Label(hdr, text=text.upper(), font=p.fonts["small_bold"], bg=p.card, fg=p.muted, anchor=anchor,
                      width=(18 if c == 0 else None)).grid(row=0, column=c, sticky="ew", padx=(0, 4))
-        self.items_box = tb.ScrolledFrame(items, auto_hide=True, height=132)
+        self.items_box = tb.ScrolledFrame(items, auto_hide=False, height=132)
         self.items_box.pack(fill="both", expand=True, pady=(4, 6))
         foot = tk.Frame(items, bg=p.card)
         foot.pack(fill="x")

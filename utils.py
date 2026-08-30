@@ -24,10 +24,24 @@ def base_dir() -> str:
 
 
 def data_dir() -> str:
-    """Writable folder for the database, logo and exports. Created on demand."""
-    path = os.path.join(base_dir(), "data")
-    os.makedirs(path, exist_ok=True)
-    return path
+    """Writable folder for the database, logo and exports.
+
+    Prefers a ``data`` folder next to the app (portable use). If that location is read-only
+    (e.g. installed under Program Files), falls back to %LOCALAPPDATA%/InvoiceApp/data.
+    """
+    preferred = os.path.join(base_dir(), "data")
+    try:
+        os.makedirs(preferred, exist_ok=True)
+        probe = os.path.join(preferred, ".write_test")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+        return preferred
+    except Exception:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        path = os.path.join(base, APP_NAME, "data")
+        os.makedirs(path, exist_ok=True)
+        return path
 
 
 def default_db_path() -> str:

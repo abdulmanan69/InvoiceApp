@@ -194,6 +194,7 @@ CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id);
 
 # Columns added after v1.0 (table, column, declaration). Applied idempotently on every start.
 MIGRATIONS = [
+    ("users", "hidden", "INTEGER NOT NULL DEFAULT 0"),
     ("products", "cost_price", "REAL NOT NULL DEFAULT 0"),
     ("products", "track_stock", "INTEGER NOT NULL DEFAULT 1"),
     ("products", "low_stock_level", "REAL NOT NULL DEFAULT 0"),

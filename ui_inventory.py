@@ -39,13 +39,14 @@ class LineGrid(tk.Frame):
         cols = [("Product", 3, "w"), ("Description", 5, "w")]
         if ref_title:
             cols.append((ref_title, 1, "e"))
-        cols += [(qty_title, 1, "e"), (price_title, 2, "e"), ("Line total", 2, "e"), ("", 0, "w")]
+        cols += [(qty_title, 1, "e"), (price_title, 2, "e"), ("Line total", 2, "e"), ("Action", 0, "e")]
         self.weights = tuple(w for _, w, _ in cols)
         for c, (text, w, anchor) in enumerate(cols):
-            hdr.grid_columnconfigure(c, weight=w, minsize=(44 if w == 0 else 0))
+            hdr.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
             tk.Label(hdr, text=text.upper(), font=p.fonts["small_bold"], bg=p.card, fg=p.muted, anchor=anchor).grid(
                 row=0, column=c, sticky="ew", padx=(0, 4))
-        self.box = tb.ScrolledFrame(self, auto_hide=True, height=height)
+        hdr.pack_configure(padx=(0, 18))
+        self.box = tb.ScrolledFrame(self, auto_hide=False, height=height)
         self.box.pack(fill="both", expand=True, pady=(4, 4))
         foot = tk.Frame(self, bg=p.card)
         foot.pack(fill="x")
@@ -59,7 +60,7 @@ class LineGrid(tk.Frame):
         fr = tk.Frame(self.box, bg=p.card)
         fr.pack(fill="x", pady=2)
         for c, w in enumerate(self.weights):
-            fr.grid_columnconfigure(c, weight=w, minsize=(44 if w == 0 else 0))
+            fr.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
         row = {"frame": fr,
                "product": IdCombo(fr, [(pr["id"], _product_label(pr)) for pr in self.products],
                                   blank_label="(choose a product)" if self.product_required else "(no product)", width=26),
@@ -83,7 +84,7 @@ class LineGrid(tk.Frame):
         row["total"] = tk.Label(fr, text="", font=p.fonts["bold"], bg=p.card, fg=p.fg, anchor="e", width=14)
         row["total"].grid(row=0, column=c, sticky="ew", padx=(0, 4))
         c += 1
-        tb.Button(fr, text="✕", bootstyle="danger-link", width=3, command=lambda r=row: self.remove_row(r)).grid(row=0, column=c)
+        tb.Button(fr, text="Remove", bootstyle="danger-outline", width=8, command=lambda r=row: self.remove_row(r)).grid(row=0, column=c, sticky="e")
         for var in (row["qty"], row["price"], row["desc"]):
             var.trace_add("write", lambda *_: self.recalc())
         if item.get("product_id"):

