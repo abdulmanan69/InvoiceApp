@@ -14,7 +14,7 @@ from db import DEFAULT_SETTINGS, Database
 from theme import apply_theme, build_palette
 from utils import data_dir, now_stamp, resource_path
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 
 # (key, icon, label, owner_only)
 NAV_ITEMS = [

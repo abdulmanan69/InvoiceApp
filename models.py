@@ -1323,6 +1323,14 @@ def cloud_sign_in(db: Database, email: str, password: str) -> dict:
     db.set_secret("session", {"access_token": data.get("access_token"),
                               "refresh_token": data.get("refresh_token"), "user": data.get("user", {})})
     db.log("cloud", f"Signed in to cloud as {_clean(email)}", "cloud", None)
+    # convenience: an employee (or owner) who belongs to exactly one shop gets linked to it
+    # automatically, so they never have to hunt for the right shop after signing in.
+    try:
+        shops = cloud_list_shops(db)
+        if len(shops) == 1:
+            cloud_link_shop(db, shops[0]["id"], shops[0].get("name", ""))
+    except Exception:
+        pass
     return data.get("user", {})
 
 

@@ -10,7 +10,7 @@ import ttkbootstrap as tb
 import models
 from db import DISPLAY_DEFAULTS, DISPLAY_LABELS
 from pdf_templates import TEMPLATE_NAMES, render_pdf
-from ui_common import (Card, DataTable, DateField, Dialog, IdCombo, PageHeader, SearchEntry, StatusBadge,
+from ui_common import (Card, DataTable, DateField, Dialog, IdCombo, PageHeader, SearchEntry, SearchIdCombo, StatusBadge,
                        ask_save_path, ask_yes_no, button, fmt_day, fmt_money, show_error, show_info)
 from ui_customers import CustomerDialog
 from ui_payments import PaymentDialog
@@ -97,7 +97,7 @@ class LineRow:
         labels = getattr(editor, "product_choices", None)
         if labels is None:
             labels = [(pr["id"], pr["name"]) for pr in products]
-        self.product = IdCombo(self.frame, labels, blank_label="(custom)", width=18)
+        self.product = SearchIdCombo(self.frame, labels, blank_label="(custom)", width=18)
         self.product.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.product.bind("<<ComboboxSelected>>", self.on_product)
         self.desc = tk.StringVar(value=item.get("description", ""))

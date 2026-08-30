@@ -10,7 +10,7 @@ import tkinter as tk
 import ttkbootstrap as tb
 
 import models
-from ui_common import (Card, DataTable, DateField, Dialog, Form, IdCombo, PageHeader, SearchEntry, ask_yes_no, button,
+from ui_common import (Card, DataTable, DateField, Dialog, Form, IdCombo, PageHeader, SearchEntry, SearchIdCombo, ask_yes_no, button,
                        fmt_day, fmt_money, show_error, show_info)
 from ui_vendors import VendorDialog
 from utils import fmt_number, parse_float, today_iso
@@ -62,7 +62,7 @@ class LineGrid(tk.Frame):
         for c, w in enumerate(self.weights):
             fr.grid_columnconfigure(c, weight=w, minsize=(74 if w == 0 else 0))
         row = {"frame": fr,
-               "product": IdCombo(fr, [(pr["id"], _product_label(pr)) for pr in self.products],
+               "product": SearchIdCombo(fr, [(pr["id"], _product_label(pr)) for pr in self.products],
                                   blank_label="(choose a product)" if self.product_required else "(no product)", width=26),
                "desc": tk.StringVar(value=item.get("description", "")),
                "qty": tk.StringVar(value=fmt_number(item["quantity"]) if "quantity" in item else "1"),
@@ -155,7 +155,7 @@ class QuickStockInDialog(Dialog):
         box.pack(fill="x")
         box.grid_columnconfigure(1, weight=1)
         self.form = Form(box, app, columns=1, label_width=16)
-        self.product = IdCombo(box, [(pr["id"], _product_label(pr)) for pr in products], allow_blank=False)
+        self.product = SearchIdCombo(box, [(pr["id"], _product_label(pr)) for pr in products], allow_blank=False)
         self.form.custom("Product *", "product", self.product)
         if product:
             self.product.set_id(product["id"])

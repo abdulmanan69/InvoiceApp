@@ -1008,28 +1008,44 @@ class LedgerTemplate(BaseTemplate):
         return Table([[head], [box]], colWidths=[cw])
 
     def _totals_block(self):
+        # one aligned table: Subtotal / (Discount) / (Tax) / (Advance) / TOTAL / (Received),
+        # every row sharing the same two columns so the money column lines up cleanly.
         d = self.doc
         lab, val = self.st["strong"], self.st["strong_r"]
-        rows = [("Subtotal", self.money(d.get("subtotal")))]
-        if float(d.get("discount_amount") or 0) > 0 and self.on("show_discount"):
-            rows.append(("Discount", "-" + self.money(d.get("discount_amount"))))
-        if float(d.get("tax_amount") or 0) > 0 and self.on("show_tax_total"):
-            rows.append((self.settings.get("tax_label") or "Tax", self.money(d.get("tax_amount"))))
-        data = [[_p(k, lab), _p(v, val)] for k, v in rows]
-        adv = self.money(d.get("paid")) if (self.is_invoice and float(d.get("paid") or 0) > 0) else ""
-        data.append([_p("Advance", lab), _p(adv, val)])
-        t = Table(data, colWidths=[36 * mm, 40 * mm])
-        t.setStyle(TableStyle([*_pad(6, 6, 3, 3), ("LINEBELOW", (0, 0), (-1, -1), 0.4, self.line),
-                               ("BOX", (1, len(data) - 1), (1, len(data) - 1), 0.6, self.text)]))
-        tl = ParagraphStyle("totl", fontName=self.font_bold, fontSize=11.5, textColor=self.text)
+        tl = ParagraphStyle("totl", fontName=self.font_bold, fontSize=11.5, textColor=colors.white)
         tv = ParagraphStyle("totv", fontName=self.font_bold, fontSize=11.5, textColor=colors.white, alignment=TA_RIGHT)
-        tot = Table([[_p("TOTAL", tl), _p(self.money(d.get("total")), tv)]], colWidths=[36 * mm, 40 * mm])
-        tot.setStyle(TableStyle([("BACKGROUND", (1, 0), (1, 0), self._BLACK), *_pad(6, 6, 6, 6)]))
-        rec = Table([[_p("Receiving", self.st["small"]), _p(" ", self.st["small"])]], colWidths=[36 * mm, 40 * mm])
-        rec.setStyle(TableStyle([*_pad(6, 6, 12, 3), ("LINEBELOW", (1, 0), (1, 0), 0.7, self.text)]))
-        outer = Table([[t], [tot], [rec]], colWidths=[76 * mm])
-        outer.setStyle(TableStyle([*_pad(0, 0, 0, 0)]))
-        return outer
+        col_lab, col_val = 34 * mm, 38 * mm
+
+        data = [[_p("Subtotal", lab), _p(self.money(d.get("subtotal")), val)]]
+        if float(d.get("discount_amount") or 0) > 0 and self.on("show_discount"):
+            data.append([_p("Discount", lab), _p("-" + self.money(d.get("discount_amount")), val)])
+        if float(d.get("tax_amount") or 0) > 0 and self.on("show_tax_total"):
+            data.append([_p(self.settings.get("tax_label") or "Tax", lab), _p(self.money(d.get("tax_amount")), val)])
+        if self.is_invoice:
+            adv = self.money(d.get("paid")) if float(d.get("paid") or 0) > 0 else ""
+            data.append([_p("Advance", lab), _p(adv, val)])
+        total_row = len(data)
+        data.append([_p("TOTAL", tl), _p(self.money(d.get("total")), tv)])
+        rec_row = None
+        if self.is_invoice:
+            rec_row = len(data)
+            data.append([_p("Received", lab), _p(" ", val)])
+
+        t = Table(data, colWidths=[col_lab, col_val])
+        t.hAlign = "RIGHT"
+        style = [("VALIGN", (0, 0), (-1, -1), "MIDDLE"), *_pad(8, 8, 4, 4),
+                 ("BOX", (0, 0), (-1, -1), 0.8, self.text),
+                 ("LINEBELOW", (0, 0), (-1, total_row - 1), 0.4, self.line),
+                 ("BACKGROUND", (0, total_row), (-1, total_row), self._BLACK),
+                 ("TOPPADDING", (0, total_row), (-1, total_row), 7),
+                 ("BOTTOMPADDING", (0, total_row), (-1, total_row), 7)]
+        if rec_row is not None:
+            # leave room to hand-write the received amount, with an underline under the value cell
+            style += [("TOPPADDING", (0, rec_row), (-1, rec_row), 12),
+                      ("BOTTOMPADDING", (0, rec_row), (-1, rec_row), 4),
+                      ("LINEBELOW", (1, rec_row), (1, rec_row), 0.7, self.text)]
+        t.setStyle(TableStyle(style))
+        return t
 
     def signature_block(self):
         return None

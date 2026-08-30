@@ -427,6 +427,182 @@ class IdCombo(tb.Combobox):
                 self.current(0)
 
 
+class SearchIdCombo(tb.Entry):
+    """Type-to-search dropdown that maps display labels to ids.
+
+    Drop-in for IdCombo (same set_options / get_id / set_id and the <<ComboboxSelected>> event)
+    but lets the user filter a long list by typing. Typing text that matches no option leaves
+    get_id() == None, which callers treat as a custom entry.
+    """
+
+    def __init__(self, master, options, allow_blank=True, blank_label="", width=18, **kw):
+        self._var = tk.StringVar()
+        super().__init__(master, textvariable=self._var, width=width, **kw)
+        self.allow_blank, self.blank_label = allow_blank, blank_label
+        self._all = []          # [(label, id)]
+        self._shown = []        # ids currently listed in the popup
+        self._pop = None
+        self._list = None
+        self._mute = False
+        self.set_options(options)
+        self._var.trace_add("write", self._on_type)
+        self.bind("<Down>", self._key_down)
+        self.bind("<Up>", self._key_up)
+        self.bind("<Return>", self._key_enter)
+        self.bind("<Escape>", lambda e: (self._close(), "break")[1])
+        self.bind("<FocusOut>", lambda e: self.after(150, self._close_if_away))
+        self.bind("<Destroy>", lambda e: self._close())
+        self.bind("<Button-1>", lambda e: self.after(1, lambda: self._open(show_all=True)))
+
+    # -------------------------------------------------------------- data / interface
+    def set_options(self, options, keep=True):
+        cur = self.get_id() if keep else None
+        base = [(self.blank_label, None)] if self.allow_blank else []
+        self._all = base + [(str(lbl), i) for i, lbl in options]
+        if cur is not None and any(i == cur for _, i in self._all):
+            self.set_id(cur)
+        elif self.allow_blank:
+            self._set_text(self.blank_label)
+        elif self._all:
+            self._set_text(self._all[0][0])
+
+    def get_id(self):
+        txt = self._var.get()
+        for lbl, i in self._all:
+            if lbl == txt:
+                return i
+        return None
+
+    def set_id(self, value):
+        for lbl, i in self._all:
+            if i == value:
+                self._set_text(lbl)
+                return
+        if self.allow_blank:
+            self._set_text(self.blank_label)
+
+    def _set_text(self, text):
+        self._mute = True
+        self._var.set(text)
+        try:
+            self.icursor("end")
+        except Exception:
+            pass
+        self._mute = False
+
+    # -------------------------------------------------------------- popup list
+    def _rows(self, show_all=False):
+        txt = self._var.get().strip().lower()
+        if show_all or not txt or txt == self.blank_label.lower():
+            return list(self._all)
+        return [(lbl, i) for lbl, i in self._all if txt in lbl.lower()]
+
+    def _open(self, show_all=False):
+        rows = self._rows(show_all)
+        if not rows:
+            self._close()
+            return
+        if self._pop is None or not self._pop.winfo_exists():
+            self._pop = tk.Toplevel(self)
+            self._pop.wm_overrideredirect(True)
+            try:
+                self._pop.attributes("-topmost", True)
+            except Exception:
+                pass
+            self._list = tk.Listbox(self._pop, activestyle="dotbox", exportselection=False,
+                                    highlightthickness=1, borderwidth=1)
+            self._list.pack(fill="both", expand=True)
+            self._list.bind("<ButtonRelease-1>", self._click)
+            self._list.bind("<Motion>", self._hover)
+        self._list.delete(0, "end")
+        self._shown = []
+        for lbl, i in rows:
+            self._list.insert("end", lbl)
+            self._shown.append(i)
+        self._list.configure(height=min(8, len(rows)))
+        self._list.selection_clear(0, "end")
+        self._list.selection_set(0)
+        self._list.activate(0)
+        self._place()
+
+    def _place(self):
+        self.update_idletasks()
+        x, y = self.winfo_rootx(), self.winfo_rooty() + self.winfo_height()
+        w = max(self.winfo_width(), 160)
+        h = self._list.winfo_reqheight()
+        self._pop.wm_geometry(f"{w}x{h}+{x}+{y}")
+        self._pop.deiconify()
+        self._pop.lift()
+
+    def _close(self, *_):
+        if self._pop is not None:
+            try:
+                self._pop.destroy()
+            except Exception:
+                pass
+            self._pop = None
+            self._list = None
+
+    def _close_if_away(self):
+        if self._pop is None:
+            return
+        try:
+            f = self.focus_get()
+        except Exception:
+            f = None
+        if f is None or (f is not self._list and f is not self):
+            self._close()
+
+    # -------------------------------------------------------------- events
+    def _on_type(self, *_):
+        if not self._mute:
+            self._open()
+
+    def _commit(self, idx):
+        if 0 <= idx < len(self._shown):
+            self._set_text(self._list.get(idx))
+        self._close()
+        self.event_generate("<<ComboboxSelected>>")
+
+    def _click(self, e):
+        self._commit(self._list.nearest(e.y))
+
+    def _hover(self, e):
+        i = self._list.nearest(e.y)
+        self._list.selection_clear(0, "end")
+        self._list.selection_set(i)
+        self._list.activate(i)
+
+    def _key_down(self, e):
+        if self._pop is None:
+            self._open(show_all=True)
+            return "break"
+        cur = self._list.curselection()
+        i = min((cur[0] + 1) if cur else 0, self._list.size() - 1)
+        self._list.selection_clear(0, "end")
+        self._list.selection_set(i)
+        self._list.activate(i)
+        self._list.see(i)
+        return "break"
+
+    def _key_up(self, e):
+        if self._pop is None:
+            return None
+        cur = self._list.curselection()
+        i = max((cur[0] - 1) if cur else 0, 0)
+        self._list.selection_clear(0, "end")
+        self._list.selection_set(i)
+        self._list.activate(i)
+        self._list.see(i)
+        return "break"
+
+    def _key_enter(self, e):
+        if self._pop is not None and self._list.curselection():
+            self._commit(self._list.curselection()[0])
+            return "break"
+        return None
+
+
 class DataTable(tk.Frame):
     """Treeview with scrollbar, column spec, row tags for status colors and zebra striping."""
 
