@@ -956,12 +956,12 @@ def save_purchase(db: Database, data: dict, raw_items: list[dict], user=None) ->
         desc = _clean(raw.get("description"))
         qty = parse_float(raw.get("quantity"), None)
         cost = parse_float(raw.get("unit_cost"), None)
-        if not product_id and not desc and qty in (None, 0):
-            continue
+        if qty in (None, 0) or (not product_id and not desc):
+            continue  # blank / zero lines are ignored
         if not product_id:
             raise ValidationError(f"Line {idx}: choose a product.")
-        if qty is None or qty <= 0:
-            raise ValidationError(f"Line {idx}: quantity must be greater than zero.")
+        if qty < 0:
+            raise ValidationError(f"Line {idx}: quantity cannot be negative.")
         if cost is None or cost < 0:
             raise ValidationError(f"Line {idx}: unit cost must be a number of 0 or more.")
         prod = get_product(db, product_id)
@@ -970,7 +970,7 @@ def save_purchase(db: Database, data: dict, raw_items: list[dict], user=None) ->
         items.append({"product_id": product_id, "description": desc or prod["name"], "quantity": qty,
                       "unit_cost": round2(cost), "line_total": round2(qty * cost), "sort_order": idx})
     if not items:
-        raise ValidationError("Add at least one product line.")
+        raise ValidationError("Add at least one product line with a quantity.")
     total = round2(sum(i["line_total"] for i in items))
     with db.transaction() as conn:
         if pid:
@@ -1083,10 +1083,10 @@ def save_return(db: Database, data: dict, raw_items: list[dict], user=None) -> i
         qty = parse_float(raw.get("quantity"), None)
         price = parse_float(raw.get("unit_price"), None)
         product_id = raw.get("product_id") or None
-        if not desc and not product_id and qty in (None, 0):
-            continue
-        if qty is None or qty <= 0:
-            raise ValidationError(f"Line {idx}: quantity must be greater than zero.")
+        if qty in (None, 0) or (not desc and not product_id):
+            continue  # 0 = this line was not returned
+        if qty < 0:
+            raise ValidationError(f"Line {idx}: quantity cannot be negative.")
         if price is None or price < 0:
             raise ValidationError(f"Line {idx}: unit price must be a number of 0 or more.")
         if kind == "vendor" and not product_id:
@@ -1098,7 +1098,7 @@ def save_return(db: Database, data: dict, raw_items: list[dict], user=None) -> i
         items.append({"product_id": product_id, "description": desc or (prod["name"] if prod else ""),
                       "quantity": qty, "unit_price": round2(price), "line_total": round2(qty * price), "sort_order": idx})
     if not items:
-        raise ValidationError("Add at least one returned line.")
+        raise ValidationError("Enter a quantity greater than 0 on at least one line (0 means not returned).")
     total = round2(sum(i["line_total"] for i in items))
     if kind == "customer" and invoice_id:
         inv_total = float(inv["total"] or 0)

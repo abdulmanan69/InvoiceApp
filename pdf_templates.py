@@ -290,7 +290,7 @@ class BaseTemplate:
 
     def meta_rows(self) -> list[tuple[str, str]]:
         d = self.doc
-        rows = [(f"{self.title.title()} No.", d.get("number", "")), ("Date", self.date(d.get("date")))]
+        rows = [("Date", self.date(d.get("date")))]  # the number is printed once, in the page header
         if d.get("due_date") and self.on("show_due_date"):
             rows.append(("Due Date" if self.is_invoice else "Valid Until", self.date(d.get("due_date"))))
         if d.get("currency") and self.on("show_currency"):
@@ -559,8 +559,8 @@ class ModernTemplate(BaseTemplate):
             canv.setFillColor(self.on_accent)
             canv.setFont(self.font_bold, self.title_size)
             canv.drawRightString(self.width - self.margin, top - 5.5 * mm, self.title)
-            canv.setFont(self.font, 9.5)
-            canv.drawRightString(self.width - self.margin, top - 11.5 * mm, f"# {self.doc.get('number', '')}")
+            canv.setFont(self.font_bold, 10.5)
+            canv.drawRightString(self.width - self.margin, top - 11.5 * mm, f"No. {self.doc.get('number', '')}")
         else:
             self._continued(canv, self.height - 8.5 * mm, self.on_accent)
         canv.restoreState()
@@ -747,8 +747,9 @@ class CorporateTemplate(BaseTemplate):
             canv.drawCentredString(self.width - self.margin - bw / 2, top - 9 * mm, self.title)
             canv.setFont(self.font, 9.5)
             canv.setFillColor(self.muted)
-            canv.drawCentredString(self.width - self.margin - bw / 2, top - 15 * mm, f"No. {self.doc.get('number', '')}")
-            canv.drawCentredString(self.width - self.margin - bw / 2, top - 19.5 * mm, self.date(self.doc.get("date")))
+            canv.setFont(self.font_bold, 10.5)
+            canv.setFillColor(self.text)
+            canv.drawCentredString(self.width - self.margin - bw / 2, top - 16.5 * mm, f"No. {self.doc.get('number', '')}")
             line_y = self.height - self.header_first + 4 * mm
         else:
             self._continued(canv, top - 6 * mm, self.text)

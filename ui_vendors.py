@@ -45,7 +45,7 @@ class VendorsPage(tk.Frame):
         self.app = app
         self.header = PageHeader(self, app, "Vendors", "Suppliers you buy stock from - record purchases under Inventory")
         self.header.pack(fill="x", padx=28, pady=(24, 12))
-        self.header.button("Purchases", lambda: app.navigate("inventory"), "secondary-outline")
+        self.header.button("All purchases", lambda: app.navigate("inventory", tab="purchases"), "secondary-outline")
         self.header.button("+ Add vendor", self.add, "primary")
 
         bar = tk.Frame(self, bg=p.bg)
@@ -54,6 +54,7 @@ class VendorsPage(tk.Frame):
         self.search.pack(side="left")
         actions = tk.Frame(bar, bg=p.bg)
         actions.pack(side="right")
+        button(actions, "New purchase from vendor", self.purchase, "success").pack(side="left", padx=(0, 6))
         button(actions, "Edit", self.edit, "secondary-outline").pack(side="left", padx=(0, 6))
         button(actions, "Delete", self.delete, "danger-outline").pack(side="left")
 
@@ -96,6 +97,14 @@ class VendorsPage(tk.Frame):
         row = self._selected()
         if row and VendorDialog(self, self.app, row).show():
             self.refresh()
+
+    def purchase(self):
+        row = self._selected()
+        if not row:
+            return
+        from ui_inventory import PurchaseDialog
+        if PurchaseDialog(self, self.app, vendor_id=row["id"]).show():
+            self.app.refresh_all()
 
     def delete(self):
         row = self._selected()

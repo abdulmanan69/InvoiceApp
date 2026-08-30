@@ -243,9 +243,14 @@ class SettingsPage(tk.Frame):
         card = self._tab("Inventory")
         card.grid_columnconfigure(1, weight=1)
         card.grid_columnconfigure(4, weight=1)
+        p = self.app.palette
+        r = card.grid_size()[1]
+        tk.Label(card, text="How stock works:  purchases from vendors ADD stock  ->  invoices SUBTRACT stock  ->  customer returns "
+                            "add it back  ->  returns to vendor remove it.  Quotations never touch stock.",
+                 font=p.fonts["base"], bg=p.card, fg=p.muted, wraplength=760, justify="left").grid(row=r, column=0, columnspan=6, sticky="w", pady=(0, 6))
         self._section(card, "Stock rules")
         r = card.grid_size()[1]
-        self._row(card, "Low stock alert at", "low_stock_threshold", 10, "units - products can set their own level", r, 0)
+        self._row(card, "Low stock alert at", "low_stock_threshold", 10, "units - each product can override this in its own settings", r, 0)
         r = card.grid_size()[1]
         self._toggle(card, "Allow invoices to exceed stock (negative stock)", "allow_negative_stock",
                      "off = an invoice cannot sell more than you have", r, 0)
