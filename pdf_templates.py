@@ -985,10 +985,14 @@ class LedgerTemplate(BaseTemplate):
         return parts
 
     def _bottom_row(self):
-        cw = self.frame_width - 84 * mm
-        row = Table([[self._comments_box(cw), self._totals_block()]], colWidths=[cw, 84 * mm])
-        row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), *_pad(0, 0, 0, 0),
-                                 ("RIGHTPADDING", (0, 0), (0, -1), 10 * mm)]))
+        # three real columns: comments | gap | totals. The comments box is sized to its own
+        # column and the totals block to 72mm, with a fixed gap between, so neither can bleed
+        # into the other (the old version padded the cell, which pushed the box into the totals).
+        totals_w = 72 * mm
+        gap = 8 * mm
+        cw = self.frame_width - totals_w - gap
+        row = Table([[self._comments_box(cw), "", self._totals_block()]], colWidths=[cw, gap, totals_w])
+        row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), *_pad(0, 0, 0, 0)]))
         return row
 
     def _comments_box(self, cw):
