@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import filedialog
 
 import ttkbootstrap as tb
-from ttkbootstrap.dialogs import Messagebox, Querybox
+from ttkbootstrap.dialogs import Messagebox
 
 from utils import fmt_date, mix, money, parse_date, to_iso
 
@@ -180,6 +180,118 @@ class SearchEntry(tk.Frame):
         self._show_placeholder()
 
 
+class CalendarPopup(tk.Toplevel):
+    """Small month-grid date picker that works inside modal dialogs (takes and returns the grab)."""
+
+    WEEKDAYS = ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+
+    def __init__(self, anchor: tk.Widget, app, start: dt.date | None, on_pick):
+        super().__init__(anchor.winfo_toplevel())
+        self.app, self.on_pick = app, on_pick
+        self.previous_grab = anchor.grab_current()
+        self.overrideredirect(True)
+        p = app.palette
+        self.configure(bg=p.card, highlightthickness=1, highlightbackground=p.border)
+        today = dt.date.today()
+        self.selected = start or today
+        self.year, self.month = self.selected.year, self.selected.month
+        head = tk.Frame(self, bg=p.card)
+        head.pack(fill="x", padx=6, pady=(6, 2))
+        tk.Button(head, text="◀", command=lambda: self.shift(-1), relief="flat", bg=p.card, fg=p.fg,
+                  activebackground=p.subtle, font=p.fonts["small_bold"], cursor="hand2").pack(side="left")
+        self.title_lbl = tk.Label(head, text="", font=p.fonts["bold"], bg=p.card, fg=p.fg)
+        self.title_lbl.pack(side="left", expand=True)
+        tk.Button(head, text="▶", command=lambda: self.shift(1), relief="flat", bg=p.card, fg=p.fg,
+                  activebackground=p.subtle, font=p.fonts["small_bold"], cursor="hand2").pack(side="right")
+        self.grid_frame = tk.Frame(self, bg=p.card)
+        self.grid_frame.pack(padx=6, pady=(0, 4))
+        foot = tk.Frame(self, bg=p.card)
+        foot.pack(fill="x", padx=6, pady=(0, 6))
+        tk.Button(foot, text="Today", command=lambda: self.pick(today), relief="flat", bg=p.subtle, fg=p.fg,
+                  font=p.fonts["small"], cursor="hand2", padx=8).pack(side="left")
+        tk.Button(foot, text="Clear", command=lambda: self.pick(None), relief="flat", bg=p.subtle, fg=p.fg,
+                  font=p.fonts["small"], cursor="hand2", padx=8).pack(side="left", padx=(6, 0))
+        tk.Button(foot, text="Close", command=self.close, relief="flat", bg=p.subtle, fg=p.fg,
+                  font=p.fonts["small"], cursor="hand2", padx=8).pack(side="right")
+        self.draw()
+        # position under the anchor widget, kept on screen
+        self.update_idletasks()
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 2
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = min(x, self.winfo_screenwidth() - w - 8)
+        if y + h > self.winfo_screenheight() - 8:
+            y = anchor.winfo_rooty() - h - 2
+        self.geometry(f"+{x}+{y}")
+        self.bind("<Escape>", lambda e: self.close())
+        self.bind("<Button-1>", self._click_outside)
+        self.after(10, self._take_grab)
+
+    def _take_grab(self):
+        try:
+            self.grab_set()
+            self.focus_set()
+        except tk.TclError:
+            pass
+
+    def _click_outside(self, event):
+        if event.widget is self:  # clicks land on the toplevel itself only when outside child widgets
+            x, y = event.x_root, event.y_root
+            if not (self.winfo_rootx() <= x <= self.winfo_rootx() + self.winfo_width()
+                    and self.winfo_rooty() <= y <= self.winfo_rooty() + self.winfo_height()):
+                self.close()
+
+    def shift(self, delta):
+        m = self.month + delta
+        if m < 1:
+            m, self.year = 12, self.year - 1
+        elif m > 12:
+            m, self.year = 1, self.year + 1
+        self.month = m
+        self.draw()
+
+    def draw(self):
+        import calendar
+        p = self.app.palette
+        for w in self.grid_frame.winfo_children():
+            w.destroy()
+        self.title_lbl.configure(text=f"{calendar.month_name[self.month]} {self.year}")
+        for c, name in enumerate(self.WEEKDAYS):
+            tk.Label(self.grid_frame, text=name, font=p.fonts["small_bold"], bg=p.card, fg=p.muted, width=4).grid(row=0, column=c)
+        today = dt.date.today()
+        for r, week in enumerate(calendar.monthcalendar(self.year, self.month), start=1):
+            for c, day in enumerate(week):
+                if day == 0:
+                    tk.Label(self.grid_frame, text="", bg=p.card, width=4).grid(row=r, column=c)
+                    continue
+                d = dt.date(self.year, self.month, day)
+                is_sel = d == self.selected
+                bg = p.accent if is_sel else (p.accent_soft if d == today else p.card)
+                fg = p.accent_fg if is_sel else p.fg
+                b = tk.Label(self.grid_frame, text=str(day), font=p.fonts["base"], bg=bg, fg=fg, width=4, pady=3, cursor="hand2")
+                b.grid(row=r, column=c, padx=1, pady=1)
+                b.bind("<Button-1>", lambda e, d=d: self.pick(d))
+                if not is_sel:
+                    b.bind("<Enter>", lambda e, w=b: w.configure(bg=p.subtle))
+                    b.bind("<Leave>", lambda e, w=b, bg=bg: w.configure(bg=bg))
+
+    def pick(self, d):
+        self.close()
+        self.on_pick(d)
+
+    def close(self):
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        if self.previous_grab is not None:
+            try:
+                self.previous_grab.grab_set()
+            except tk.TclError:
+                pass
+
+
 class DateField(tk.Frame):
     """Text entry (YYYY-MM-DD) with a calendar picker button."""
 
@@ -193,10 +305,8 @@ class DateField(tk.Frame):
         tb.Button(self, text="📅", bootstyle="secondary-outline", command=self.pick, width=3).pack(side="left", padx=(4, 0))
 
     def pick(self):
-        start = parse_date(self.var.get()) or dt.date.today()
-        chosen = Querybox.get_date(parent=self, title="Select date", start_date=start)
-        if chosen:
-            self.var.set(chosen.isoformat())
+        start = parse_date(self.var.get())
+        CalendarPopup(self.entry, self.app, start, lambda d: self.var.set(d.isoformat() if d else ""))
 
     def get(self) -> str:
         return self.var.get().strip()

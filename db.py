@@ -1,4 +1,4 @@
-"""SQLite connection, schema, settings store, backup/restore."""
+"""SQLite connection, schema + migrations, settings store, backup/restore."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,17 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    full_name     TEXT DEFAULT '',
+    role          TEXT NOT NULL CHECK (role IN ('owner', 'employee')),
+    password_hash TEXT NOT NULL,
+    salt          TEXT NOT NULL,
+    active        INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS customers (
@@ -99,6 +110,69 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS purchases (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    number     TEXT NOT NULL UNIQUE,
+    vendor_id  INTEGER REFERENCES vendors(id) ON DELETE SET NULL,
+    date       TEXT NOT NULL,
+    reference  TEXT DEFAULT '',
+    notes      TEXT DEFAULT '',
+    total      REAL NOT NULL DEFAULT 0,
+    created_by TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS purchase_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+    product_id  INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    description TEXT DEFAULT '',
+    quantity    REAL NOT NULL DEFAULT 0,
+    unit_cost   REAL NOT NULL DEFAULT 0,
+    line_total  REAL NOT NULL DEFAULT 0,
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS returns (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL CHECK (kind IN ('customer', 'vendor')),
+    number      TEXT NOT NULL UNIQUE,
+    invoice_id  INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+    purchase_id INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
+    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+    vendor_id   INTEGER REFERENCES vendors(id) ON DELETE SET NULL,
+    date        TEXT NOT NULL,
+    reason      TEXT DEFAULT '',
+    restock     INTEGER NOT NULL DEFAULT 1,
+    total       REAL NOT NULL DEFAULT 0,
+    created_by  TEXT DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS return_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_id   INTEGER NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+    product_id  INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    description TEXT DEFAULT '',
+    quantity    REAL NOT NULL DEFAULT 0,
+    unit_price  REAL NOT NULL DEFAULT 0,
+    line_total  REAL NOT NULL DEFAULT 0,
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS stock_movements (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    qty        REAL NOT NULL,
+    kind       TEXT NOT NULL,
+    ref_type   TEXT,
+    ref_id     INTEGER,
+    unit_cost  REAL NOT NULL DEFAULT 0,
+    date       TEXT NOT NULL,
+    note       TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS activity_log (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     ts       TEXT NOT NULL,
@@ -113,7 +187,76 @@ CREATE INDEX IF NOT EXISTS idx_documents_customer ON documents(customer_id);
 CREATE INDEX IF NOT EXISTS idx_items_document ON document_items(document_id);
 CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(date);
+CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id);
+CREATE INDEX IF NOT EXISTS idx_movements_ref ON stock_movements(ref_type, ref_id);
+CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id);
 """
+
+# Columns added after v1.0 (table, column, declaration). Applied idempotently on every start.
+MIGRATIONS = [
+    ("products", "cost_price", "REAL NOT NULL DEFAULT 0"),
+    ("products", "track_stock", "INTEGER NOT NULL DEFAULT 1"),
+    ("products", "low_stock_level", "REAL NOT NULL DEFAULT 0"),
+    ("documents", "bill_to_label", "TEXT DEFAULT ''"),
+    ("documents", "bill_to_text", "TEXT DEFAULT ''"),
+    ("documents", "display_options", "TEXT DEFAULT ''"),
+    ("documents", "prepared_by", "TEXT DEFAULT ''"),
+    ("documents", "received_by", "TEXT DEFAULT ''"),
+    ("documents", "created_by", "TEXT DEFAULT ''"),
+    ("document_items", "sku", "TEXT DEFAULT ''"),
+    ("document_items", "cost_price", "REAL NOT NULL DEFAULT 0"),
+    ("payments", "created_by", "TEXT DEFAULT ''"),
+]
+
+# Per-document PDF display switches. These are the defaults; Settings can change them and
+# every document stores its own copy (display_options JSON) so old PDFs keep their look.
+DISPLAY_DEFAULTS = {
+    "show_logo": 1,
+    "show_company_details": 1,
+    "show_status": 1,
+    "show_due_date": 1,
+    "show_currency": 1,
+    "show_customer_contact": 1,
+    "show_ship_to": 1,
+    "show_line_numbers": 1,
+    "show_sku": 0,
+    "show_qty": 1,
+    "show_unit": 1,
+    "show_unit_price": 1,
+    "show_tax_col": 1,
+    "show_discount": 1,
+    "show_tax_total": 1,
+    "show_paid_balance": 1,
+    "show_notes": 1,
+    "show_terms": 1,
+    "show_bank_details": 1,
+    "show_signatures": 1,
+    "show_grid": 1,
+}
+
+DISPLAY_LABELS = {
+    "show_logo": "Company logo",
+    "show_company_details": "Company address / contact lines",
+    "show_status": "Status badge (Paid / Unpaid ...)",
+    "show_due_date": "Due date / Valid until",
+    "show_currency": "Currency line",
+    "show_customer_contact": "Customer phone / email / tax no.",
+    "show_ship_to": "Ship-to block (when different)",
+    "show_line_numbers": "Column: #",
+    "show_sku": "Column: SKU / code",
+    "show_qty": "Column: Qty",
+    "show_unit": "Column: Unit",
+    "show_unit_price": "Column: Unit price",
+    "show_tax_col": "Column: Tax %",
+    "show_discount": "Discount line in totals",
+    "show_tax_total": "Tax line in totals",
+    "show_paid_balance": "Paid / Balance due lines",
+    "show_notes": "Notes",
+    "show_terms": "Terms & conditions",
+    "show_bank_details": "Bank / payment details",
+    "show_signatures": "Signature boxes (prepared by / received by)",
+    "show_grid": "Grid borders on the items table",
+}
 
 # Every brandable / business-specific value lives here, never in the UI or PDF code.
 DEFAULT_SETTINGS = {
@@ -138,6 +281,10 @@ DEFAULT_SETTINGS = {
     "quotation_prefix": "QT-",
     "quotation_next_number": "1",
     "quotation_number_padding": "4",
+    "purchase_prefix": "PUR-",
+    "purchase_next_number": "1",
+    "return_prefix": "RET-",
+    "return_next_number": "1",
     "invoice_due_days": "14",
     "quotation_valid_days": "30",
     # documents
@@ -146,6 +293,17 @@ DEFAULT_SETTINGS = {
     "default_notes": "Thank you for your business.",
     "default_terms": "Payment is due within the stated period. Please quote the invoice number when making payment.",
     "bank_details": "",
+    "bill_to_label": "Bill To",
+    "doc_display_defaults": json.dumps(DISPLAY_DEFAULTS),
+    "signature_prepared_label": "Prepared by",
+    "signature_received_label": "Received by",
+    "signature_prepared_name": "",  # blank = the logged-in user's name
+    "signature_received_name": "",
+    # inventory
+    "allow_negative_stock": "0",
+    "low_stock_threshold": "5",
+    # access
+    "require_login": "1",
     # payments
     "payment_methods": json.dumps(["Cash", "Bank Transfer", "Credit/Debit Card", "Cheque", "Online/Wallet"]),
     # theme
@@ -192,6 +350,10 @@ class Database:
     def init_schema(self):
         with self._lock:
             self.conn.executescript(SCHEMA)
+            for table, column, decl in MIGRATIONS:
+                cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                if column not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             for key, value in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value))
             self.conn.commit()
@@ -287,6 +449,22 @@ class Database:
 
     def set_list_setting(self, key: str, values: list) -> None:
         self.set_setting(key, json.dumps([str(v) for v in values]))
+
+    def get_json_setting(self, key: str, default: dict | None = None) -> dict:
+        raw = self.get_setting(key, "")
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {}
+        out = dict(default or {})
+        if isinstance(data, dict):
+            out.update(data)
+        return out
+
+    def display_defaults(self) -> dict:
+        """Default PDF display switches (settings override the built-in defaults)."""
+        return {k: int(bool(v)) for k, v in self.get_json_setting("doc_display_defaults", DISPLAY_DEFAULTS).items()
+                if k in DISPLAY_DEFAULTS}
 
     # ---------------------------------------------------------------- backup / restore
     def backup_to(self, target_path: str) -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 import tkinter as tk
 
 import models
-from ui_common import Card, DataTable, Dialog, Form, PageHeader, SearchEntry, ask_yes_no, button, show_error, show_info
+from ui_common import (Card, DataTable, Dialog, Form, PageHeader, SearchEntry, ask_yes_no, button, fmt_money,
+                       show_error, show_info)
 
 
 class VendorDialog(Dialog):
@@ -42,8 +43,9 @@ class VendorsPage(tk.Frame):
         p = app.palette
         super().__init__(master, bg=p.bg)
         self.app = app
-        self.header = PageHeader(self, app, "Vendors", "Suppliers and services you purchase from")
+        self.header = PageHeader(self, app, "Vendors", "Suppliers you buy stock from - record purchases under Inventory")
         self.header.pack(fill="x", padx=28, pady=(24, 12))
+        self.header.button("Purchases", lambda: app.navigate("inventory"), "secondary-outline")
         self.header.button("+ Add vendor", self.add, "primary")
 
         bar = tk.Frame(self, bg=p.bg)
@@ -62,15 +64,17 @@ class VendorsPage(tk.Frame):
             {"key": "company", "title": "Company", "width": 200},
             {"key": "phone", "title": "Phone", "width": 130},
             {"key": "email", "title": "Email", "width": 200},
-            {"key": "tax_number", "title": "Tax no.", "width": 120},
-            {"key": "address", "title": "Address", "width": 240, "stretch": True},
+            {"key": "address", "title": "Address", "width": 220, "stretch": True},
+            {"key": "purchases", "title": "Purchases", "width": 90, "anchor": "e"},
+            {"key": "bought", "title": "Total bought", "width": 130, "anchor": "e"},
         ], height=18, on_double=lambda r: self.edit())
         self.table.pack(fill="both", expand=True, padx=2, pady=2)
 
     def refresh(self, *_, **__):
         rows = models.list_vendors(self.app.db, self.search.get())
-        self.table.set_rows(rows, lambda r: [r["name"], r["company"], r["phone"], r["email"], r["tax_number"],
-                                             (r["address"] or "").replace("\n", ", ")])
+        self.table.set_rows(rows, lambda r: [r["name"], r["company"], r["phone"], r["email"],
+                                             (r["address"] or "").replace("\n", ", "), r["purchase_count"],
+                                             fmt_money(self.app, r["purchased_total"])])
         if rows:
             self.table.hide_empty()
         elif self.search.get():

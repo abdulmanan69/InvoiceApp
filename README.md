@@ -1,30 +1,53 @@
-# InvoiceApp — Invoice, Quotation & Payment Manager (PKR)
+# InvoiceApp — Invoice, Quotation, Inventory & Payment Manager (PKR)
 
-A standalone Windows desktop app for small businesses to manage **customers, vendors,
-products/services, invoices, quotations and payments**. Everything runs locally in a single
-SQLite file — no server, no internet, no subscription. Default currency is **Pakistani Rupee
-(PKR, "Rs")**, changeable in Settings.
+A standalone Windows desktop app for small businesses: **customers, vendors, products, stock,
+purchases, invoices, quotations, payments, returns** — all in one local SQLite file. No server,
+no internet, no subscription. Default currency is **Pakistani Rupee (PKR, "Rs")**, changeable in
+Settings.
 
 ## Features
 
-- **Dashboard** — outstanding balance, paid this month, overdue count, open quotations,
-  recent invoices and an activity feed.
-- **Invoices & Quotations** — searchable/filterable lists (status, customer, date range),
-  editor with product auto-fill, per-line tax override, percentage or fixed discount,
-  live totals, duplicate, print, PDF export, one-click **Convert quotation → invoice**.
-- **Payments** — partial payments, overpayment guard (override with confirmation),
-  **Mark as paid** (records a real payment row), global payment log with filters, CSV export.
-- **Status** is always computed from payments vs. total: `Unpaid`, `Partially Paid`, `Paid`,
-  `Overdue` (colour-coded everywhere). Quotations show `Open`, `Converted`, `Expired`.
-- **Numbering** — configurable prefix + counter + zero-padding per document type; the number
-  stays editable and duplicates are rejected on save.
-- **3 PDF templates** — *Modern* (colour band), *Classic* (centred serif, formal rules),
-  *Minimal* (hairlines & whitespace). A4 or Letter, logo, company/client blocks, itemised
-  table with repeated header on every page, totals, status badge, notes/terms, bank details.
-- **Settings** — company profile & logo, currency, tax defaults, numbering, payment-method
-  list, default notes/terms, template & page size, **theme colours (live-applied to the UI
-  and PDFs)**, database backup/restore. No business data is hardcoded anywhere.
-- CSV export for invoices, customers and payments.
+### Documents
+- **Invoices & quotations** — searchable/filterable lists, editor with product auto-fill (shows
+  what is in stock), per-line tax override, % or fixed discount, live totals, duplicate, print,
+  PDF export, one-click **Convert quotation → invoice**.
+- **7 PDF templates** — Modern, Classic, Minimal, Bold, Corporate, Elegant, Compact. A4 or
+  Letter. Big company name and bill-to name/company, logo, itemised table with grid borders,
+  totals, status badge, notes/terms, bank details, **signature boxes** (prepared by / received
+  by with names). Long lists paginate with the table header repeated.
+- **Per-document PDF options** — *Show / hide sections & columns…* in the editor: turn off the
+  status badge, due date, currency, logo, any table column (#, SKU, Qty, Unit, Unit price,
+  Tax %), discount/tax/paid lines, notes, terms, bank details, signatures, grid. Defaults live in
+  *Settings → PDF layout*.
+- **Editable "Bill To"** — change the heading (e.g. "Client", "Invoice To") and type any bill-to
+  text; leave it empty to print the customer's details automatically.
+- Numbering: prefix + counter + padding per document type, editable, duplicates rejected.
+
+### Money
+- Payments (partial, overpayment guard, Mark as paid = real payment row), global payments log,
+  CSV export. Status is always computed: Unpaid / Partially Paid / Paid / Overdue.
+- **Customer returns** credit the invoice (balance drops) and optionally put items back in stock.
+
+### Inventory
+- Products carry a **cost price (what you paid)** and a **sale price**; margin shown to owners.
+- **Purchases from vendors** add stock and update the cost price. **Returns to vendor** remove stock.
+- Invoices **cannot sell more than is in stock** (50 in stock → max 50 on invoices; owners can
+  allow negative stock in Settings). Editing an invoice frees its own stock first.
+- Stock levels, low-stock alerts (global threshold or per product), stock adjustments, full
+  movement history, **best sellers** (qty, revenue, gross profit) by date range.
+
+### Access
+- **Login with roles.** First run creates the **owner**. Owners see everything: payments,
+  purchases, costs, profit, vendors, settings, users. **Employees** can work with invoices,
+  quotations, customers, products (sale prices only) and view stock — no payments, no costs,
+  no deletes. Manage accounts in *Settings → Users*; sign-in can be switched off.
+- Owner dashboard: outstanding, paid this month, overdue, open quotes, **gross profit**, stock
+  value, low stock, purchases, best sellers, activity feed. Employee dashboard shows counts only.
+
+### Everything is configurable
+Company profile & logo, currency, tax defaults, numbering, payment-method list, default
+notes/terms, template & page size, bill-to heading, signature labels/names, PDF defaults, low
+stock rules, **theme colours (live)**, backup/restore. Nothing business-specific is hardcoded.
 
 ## Run from source
 
@@ -33,12 +56,11 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Requires Python 3.11+ on Windows 10/11. Dependencies: `reportlab` (PDF), `ttkbootstrap`
-(modern ttk theme), `pillow` (logo preview / images), `pyinstaller` (packaging only).
+Python 3.11+ on Windows 10/11. Dependencies: `reportlab` (PDF), `ttkbootstrap` (modern ttk
+theme), `pillow` (logo preview / images), `pyinstaller` (packaging only).
 
-Data lives in `data\invoice_app.db` next to `main.py` (or next to the exe when packaged).
-PDFs produced by *Print* go to `data\exports\`. Unexpected errors are logged to
-`data\error.log` — the app never loses data on a UI error.
+Data lives in `data\invoice_app.db` next to `main.py` (or next to the exe). *Print* writes to
+`data\exports\`. Errors are logged to `data\error.log`.
 
 ## Tests
 
@@ -46,10 +68,10 @@ PDFs produced by *Print* go to `data\exports\`. Unexpected errors are logged to
 python -m unittest tests.test_flow -v
 ```
 
-Covers the full spec flow: customer → product → invoice → partial payment (`Partially Paid`)
-→ mark as paid (`Paid`) → quotation → convert → duplicate → PDF for every template/page size
-(1 page for short docs, multi-page with repeated header for 60 lines) → missing logo / empty
-invoice → backup → delete → restore → data survives.
+Covers: customer → product → invoice → partial payment → paid → quotation → convert → PDFs for
+all 7 templates × 2 sizes (1 page short, multi-page long) with every switch on/off → backup →
+restore; purchases → stock limit → returns (credit + restock) → vendor returns → best sellers →
+profit; users, roles and password checks; bad-number safety.
 
 ## Build the portable exe
 
@@ -57,31 +79,30 @@ invoice → backup → delete → restore → data survives.
 build.bat
 ```
 
-`build.bat` installs dependencies, runs the tests, then runs PyInstaller
-(`--onefile --windowed`, heavy modules excluded) and copies the result to
-`InvoiceApp.exe` in the project root. Copy that single file anywhere; it creates its
-`data\` folder beside itself on first launch.
-
-> Windows SmartScreen may warn about an unsigned exe the first time — choose
-> *More info → Run anyway*.
+Installs dependencies, runs the tests, runs PyInstaller (`--onefile --windowed`) and copies
+`InvoiceApp.exe` to the project root. Copy that one file anywhere; it creates `data\` beside
+itself on first launch (put it in a folder you can write to, not Program Files). SmartScreen may
+warn about an unsigned exe — *More info → Run anyway*.
 
 ## Project layout
 
 | File | Purpose |
 | --- | --- |
-| `main.py` | App window, sidebar navigation, theme application, global error handler |
-| `db.py` | SQLite schema, settings store (with all defaults), backup/restore |
-| `models.py` | CRUD, totals, computed statuses, numbering, conversions, dashboard stats, CSV |
-| `pdf_templates.py` | Modern / Classic / Minimal PDF layouts (reportlab) |
-| `theme.py` | Palette derived from settings → ttkbootstrap theme + fonts |
-| `ui_common.py` | Cards, tables, badges, dialogs, form helpers |
+| `main.py` | App window, login flow, role-aware sidebar, theme application, error handler |
+| `db.py` | SQLite schema + migrations, settings defaults, PDF display defaults, backup/restore |
+| `models.py` | CRUD, totals, statuses, numbering, users/auth, stock movements, purchases, returns, reports |
+| `pdf_templates.py` | The 7 PDF layouts + display-option handling (reportlab) |
+| `theme.py` | Palette from settings → ttkbootstrap theme + fonts |
+| `ui_common.py` | Cards, tables, badges, dialogs, forms, calendar popup |
+| `ui_auth.py` | Owner setup, login, user management dialogs |
+| `ui_inventory.py` | Stock, purchases, returns, best sellers, movement history |
 | `ui_dashboard.py`, `ui_documents.py`, `ui_customers.py`, `ui_vendors.py`, `ui_products.py`, `ui_payments.py`, `ui_settings.py` | One module per screen |
-| `utils.py` | Paths, money/number/date parsing & formatting |
-| `tests/test_flow.py` | End-to-end logic test |
+| `utils.py` | Paths, money/number/date helpers |
+| `tests/test_flow.py` | End-to-end logic tests |
 | `build.bat`, `requirements.txt` | Packaging |
 
 ## Backup & restore
 
-*Settings → Data → Back up database…* copies the live database (SQLite online-backup API) to
-any location. *Restore from backup…* validates the file, asks for confirmation, keeps an
-`invoice_app.db.before-restore` safety copy, then replaces the current data.
+*Settings → Data → Back up database…* copies the live database anywhere. *Restore from backup…*
+validates the file, asks for confirmation, keeps `invoice_app.db.before-restore`, then replaces the
+current data (customers, invoices, stock, users — everything).

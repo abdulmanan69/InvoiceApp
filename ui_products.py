@@ -1,4 +1,4 @@
-"""Products / services page: searchable list + add/edit/delete."""
+"""Products / services page: searchable list + add/edit/delete with cost price, sale price and stock settings."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -13,27 +13,41 @@ from utils import fmt_number
 
 class ProductDialog(Dialog):
     def __init__(self, parent, app, product: dict | None = None):
-        super().__init__(parent, app, "Edit product / service" if product else "New product / service", width=680)
+        super().__init__(parent, app, "Edit product / service" if product else "New product / service", width=720)
         self.product = product or {}
         pr = self.product
+        owner = app.is_owner
         f = Form(self.body, app, columns=2)
         self.form = f
         f.entry("Name *", "name", pr.get("name", ""), span=2)
         f.entry("SKU / code", "sku", pr.get("sku", ""))
         f.entry("Unit", "unit", pr.get("unit", "pcs"))
-        f.entry("Unit price *", "unit_price", fmt_number(pr.get("unit_price", 0)) if pr else "")
+        f.entry("Sale price *", "unit_price", fmt_number(pr.get("unit_price", 0)) if pr else "")
+        if owner:
+            f.entry("Cost price (bought at)", "cost_price", fmt_number(pr.get("cost_price", 0)) if pr else "")
+        else:
+            f._next()
         f.entry("Tax % override", "tax_rate", "" if pr.get("tax_rate") is None else fmt_number(pr.get("tax_rate")))
+        f.entry("Low-stock alert at", "low_stock_level", fmt_number(pr.get("low_stock_level", 0)) if pr and pr.get("low_stock_level") else "")
+        if not pr and owner:
+            f.entry("Opening stock", "opening_stock", "")
+        else:
+            f._next()
         f.text("Description", "description", pr.get("description", ""), span=2, height=3)
+        f.check("Track stock (invoices cannot exceed what is in stock)", "track_stock", pr.get("track_stock", 1) in (1, True), span=2)
         f.check("Active (available for new invoices)", "active", pr.get("active", 1) in (1, True), span=2)
         p = app.palette
-        tk.Label(self.body, text="Leave the tax override blank to use the document's default tax rate.",
-                 font=p.fonts["small"], bg=p.bg, fg=p.muted, anchor="w").grid(row=99, column=0, columnspan=4, sticky="w")
+        tk.Label(self.body, text="Blank tax override = document default. Blank low-stock level = the global threshold from Settings.\n"
+                                 "Untick 'Track stock' for services or items you never run out of.",
+                 font=p.fonts["small"], bg=p.bg, fg=p.muted, anchor="w", justify="left").grid(row=99, column=0, columnspan=4, sticky="w")
         self.buttons("Save product", self.save)
         f.focus_first()
 
     def save(self):
         data = self.form.get()
         data["id"] = self.product.get("id")
+        if self.product and "cost_price" not in data:
+            data["cost_price"] = self.product.get("cost_price", 0)
         try:
             self.result = models.save_product(self.app.db, data)
         except models.ValidationError as e:
@@ -49,7 +63,8 @@ class ProductsPage(tk.Frame):
         p = app.palette
         super().__init__(master, bg=p.bg)
         self.app = app
-        self.header = PageHeader(self, app, "Products & Services", "Reusable line items with default prices")
+        self.owner = app.is_owner
+        self.header = PageHeader(self, app, "Products & Services", "Reusable line items with prices and stock tracking")
         self.header.pack(fill="x", padx=28, pady=(24, 12))
         self.header.button("+ Add product", self.add, "primary")
 
@@ -63,27 +78,45 @@ class ProductsPage(tk.Frame):
         actions = tk.Frame(bar, bg=p.bg)
         actions.pack(side="right")
         button(actions, "Edit", self.edit, "secondary-outline").pack(side="left", padx=(0, 6))
-        button(actions, "Delete", self.delete, "danger-outline").pack(side="left")
+        if self.owner:
+            button(actions, "Delete", self.delete, "danger-outline").pack(side="left")
 
         card = Card(self, app, padding=0)
         card.pack(fill="both", expand=True, padx=28, pady=(0, 24))
-        self.table = DataTable(card, app, [
-            {"key": "sku", "title": "SKU", "width": 110},
+        cols = [
+            {"key": "sku", "title": "SKU", "width": 100},
             {"key": "name", "title": "Name", "width": 220},
-            {"key": "description", "title": "Description", "width": 300, "stretch": True},
-            {"key": "unit", "title": "Unit", "width": 70},
-            {"key": "unit_price", "title": "Unit price", "width": 130, "anchor": "e"},
-            {"key": "tax_rate", "title": "Tax %", "width": 80, "anchor": "e"},
-            {"key": "active", "title": "Status", "width": 90},
-        ], height=18, on_double=lambda r: self.edit())
+            {"key": "description", "title": "Description", "width": 240, "stretch": True},
+            {"key": "unit", "title": "Unit", "width": 60},
+            {"key": "stock", "title": "In stock", "width": 90, "anchor": "e"},
+        ]
+        if self.owner:
+            cols += [{"key": "cost", "title": "Cost", "width": 100, "anchor": "e"},
+                     {"key": "unit_price", "title": "Sale price", "width": 110, "anchor": "e"},
+                     {"key": "margin", "title": "Margin", "width": 70, "anchor": "e"}]
+        else:
+            cols += [{"key": "unit_price", "title": "Sale price", "width": 110, "anchor": "e"}]
+        cols += [{"key": "tax_rate", "title": "Tax %", "width": 70, "anchor": "e"},
+                 {"key": "active", "title": "Status", "width": 80}]
+        self.table = DataTable(card, app, cols, height=18, on_double=lambda r: self.edit())
         self.table.pack(fill="both", expand=True, padx=2, pady=2)
 
     def refresh(self, *_, **__):
         rows = models.list_products(self.app.db, self.search.get(), active_only=not self.show_inactive.get())
-        self.table.set_rows(rows, lambda r: [r["sku"], r["name"], (r["description"] or "").replace("\n", " "), r["unit"],
-                                             fmt_money(self.app, r["unit_price"]),
-                                             "default" if r["tax_rate"] is None else fmt_number(r["tax_rate"]),
-                                             "Active" if r["active"] else "Inactive"])
+
+        def fmt(r):
+            vals = [r["sku"], r["name"], (r["description"] or "").replace("\n", " "), r["unit"],
+                    fmt_number(r["stock"]) if r.get("track_stock") else "-"]
+            if self.owner:
+                cost, price = float(r.get("cost_price") or 0), float(r.get("unit_price") or 0)
+                vals += [fmt_money(self.app, cost), fmt_money(self.app, price),
+                         f"{(price - cost) / price * 100:.0f}%" if price else "-"]
+            else:
+                vals += [fmt_money(self.app, r["unit_price"])]
+            return vals + ["default" if r["tax_rate"] is None else fmt_number(r["tax_rate"]),
+                           "Active" if r["active"] else "Inactive"]
+
+        self.table.set_rows(rows, fmt)
         if rows:
             self.table.hide_empty()
         elif self.search.get():
@@ -109,7 +142,7 @@ class ProductsPage(tk.Frame):
 
     def delete(self):
         row = self._selected()
-        if row and ask_yes_no(self, f"Delete '{row['name']}'?\nExisting invoice lines keep their text and price.",
-                              "Delete product"):
+        if row and ask_yes_no(self, f"Delete '{row['name']}'?\nExisting invoice lines keep their text and price; its stock "
+                                    "history is removed.", "Delete product"):
             models.delete_product(self.app.db, row["id"])
             self.refresh()

@@ -1,4 +1,4 @@
-"""Settings page: company profile, documents & numbering, payment methods, appearance, data backup/restore."""
+"""Settings page: company, documents & numbering, PDF layout, payment methods, inventory, users, appearance, data."""
 from __future__ import annotations
 
 import datetime as dt
@@ -10,10 +10,11 @@ from tkinter import colorchooser
 
 import ttkbootstrap as tb
 
-from db import DEFAULT_SETTINGS
-from pdf_templates import TEMPLATE_NAMES
-from ui_common import (Card, PageHeader, StatusBadge, ask_open_path, ask_save_path, ask_yes_no, button, show_error,
-                       show_info)
+import models
+from db import DEFAULT_SETTINGS, DISPLAY_DEFAULTS, DISPLAY_LABELS
+from pdf_templates import TEMPLATE_DESCRIPTIONS, TEMPLATE_NAMES
+from ui_common import (Card, DataTable, PageHeader, StatusBadge, ask_open_path, ask_save_path, ask_yes_no, button,
+                       show_error, show_info)
 from utils import data_dir, is_hex_color, open_file, parse_float
 
 THEME_KEYS = ("theme_accent", "theme_bg", "theme_fg", "theme_success", "theme_warning", "theme_danger", "theme_muted",
@@ -30,6 +31,7 @@ class SettingsPage(tk.Frame):
         self.vars: dict[str, tk.StringVar] = {}
         self.texts: dict[str, tk.Text] = {}
         self.swatches: dict[str, tk.Label] = {}
+        self.display_vars: dict[str, tk.BooleanVar] = {}
         self._logo_image = None
 
         self.header = PageHeader(self, app, "Settings", "Everything brandable lives here - nothing is hardcoded")
@@ -40,7 +42,10 @@ class SettingsPage(tk.Frame):
         self.nb.pack(fill="both", expand=True, padx=28, pady=(0, 24))
         self.tab_company()
         self.tab_documents()
+        self.tab_pdf_layout()
         self.tab_payments()
+        self.tab_inventory()
+        self.tab_users()
         self.tab_appearance()
         self.tab_data()
 
@@ -80,6 +85,21 @@ class SettingsPage(tk.Frame):
         self.texts[key] = t
         return t
 
+    def _toggle(self, master, label, key, hint="", r=None, c=0):
+        p = self.app.palette
+        r = master.grid_size()[1] if r is None else r
+        var = tk.StringVar(value="1" if self.app.settings.get(key, "0") == "1" else "0")
+        self.vars[key] = var
+        bv = tk.BooleanVar(value=var.get() == "1")
+        bv.trace_add("write", lambda *_: var.set("1" if bv.get() else "0"))
+        cb = tb.Checkbutton(master, text=label, variable=bv, bootstyle="round-toggle")
+        cb.grid(row=r, column=c * 3, columnspan=2, sticky="w", pady=5)
+        if hint:
+            tk.Label(master, text=hint, font=p.fonts["small"], bg=p.card, fg=p.muted, anchor="w").grid(
+                row=r, column=c * 3 + 2, sticky="w", padx=(8, 0))
+        cb._bool = bv  # keep a reference alive
+        return cb
+
     def _section(self, master, text):
         p = self.app.palette
         r = master.grid_size()[1]
@@ -106,15 +126,14 @@ class SettingsPage(tk.Frame):
             row=r, column=0, sticky="ne", padx=(0, 8), pady=5)
         box = tk.Frame(card, bg=p.card)
         box.grid(row=r, column=1, columnspan=5, sticky="w")
-        self.logo_preview = tk.Label(box, bg=p.subtle, width=28, height=6, text="No logo", fg=p.muted,
-                                     font=p.fonts["small"])
+        self.logo_preview = tk.Label(box, bg=p.subtle, width=28, height=6, text="No logo", fg=p.muted, font=p.fonts["small"])
         self.logo_preview.pack(side="left")
         btns = tk.Frame(box, bg=p.card)
         btns.pack(side="left", padx=12, anchor="n")
         button(btns, "Choose image...", self.choose_logo, "outline").pack(anchor="w")
         button(btns, "Remove logo", self.remove_logo, "danger-outline").pack(anchor="w", pady=(6, 0))
-        tk.Label(btns, text="PNG or JPG. Shown top-left on Modern/Minimal and centred on Classic.",
-                 font=p.fonts["small"], bg=p.card, fg=p.muted).pack(anchor="w", pady=(8, 0))
+        tk.Label(btns, text="PNG or JPG. Placement depends on the template.", font=p.fonts["small"], bg=p.card,
+                 fg=p.muted).pack(anchor="w", pady=(8, 0))
         self.vars["company_logo"] = tk.StringVar(value=self.app.settings.get("company_logo", ""))
         self.update_logo_preview()
 
@@ -143,24 +162,54 @@ class SettingsPage(tk.Frame):
         r = card.grid_size()[1]
         self._row(card, "Zero padding", "quotation_number_padding", 10, "", r, 0)
         self._row(card, "Valid for (days)", "quotation_valid_days", 10, "", r, 1)
-        self._section(card, "PDF defaults")
-        p = self.app.palette
-        r = card.grid_size()[1]
-        tk.Label(card, text="Default template", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
-            row=r, column=0, sticky="e", padx=(0, 8), pady=5)
-        self.vars["default_template"] = tk.StringVar(value=self.app.settings.get("default_template", TEMPLATE_NAMES[0]))
-        tb.Combobox(card, textvariable=self.vars["default_template"], values=TEMPLATE_NAMES, state="readonly",
-                    width=12).grid(row=r, column=1, sticky="w", pady=5)
-        tk.Label(card, text="Page size", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
-            row=r, column=3, sticky="e", padx=(0, 8), pady=5)
-        self.vars["pdf_page_size"] = tk.StringVar(value=self.app.settings.get("pdf_page_size", "A4"))
-        tb.Combobox(card, textvariable=self.vars["pdf_page_size"], values=["A4", "Letter"], state="readonly",
-                    width=10).grid(row=r, column=4, sticky="w", pady=5)
+        self._section(card, "Default texts")
         r = card.grid_size()[1]
         self._row(card, "Date format", "date_format", 14, "%d %b %Y -> 30 Aug 2026,  %d/%m/%Y -> 30/08/2026", r, 0, span=2)
         self._text(card, "Default notes", "default_notes", 2)
         self._text(card, "Default terms", "default_terms", 3)
         self._text(card, "Bank / payment details", "bank_details", 3)
+
+    def tab_pdf_layout(self):
+        card = self._tab("PDF layout")
+        p = self.app.palette
+        card.grid_columnconfigure(1, weight=1)
+        card.grid_columnconfigure(4, weight=1)
+        self._section(card, "Template")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Default template", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=5)
+        self.vars["default_template"] = tk.StringVar(value=self.app.settings.get("default_template", TEMPLATE_NAMES[0]))
+        tb.Combobox(card, textvariable=self.vars["default_template"], values=TEMPLATE_NAMES, state="readonly", width=12).grid(
+            row=r, column=1, sticky="w", pady=5)
+        tk.Label(card, text="Page size", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=3, sticky="e", padx=(0, 8), pady=5)
+        self.vars["pdf_page_size"] = tk.StringVar(value=self.app.settings.get("pdf_page_size", "A4"))
+        tb.Combobox(card, textvariable=self.vars["pdf_page_size"], values=["A4", "Letter"], state="readonly", width=10).grid(
+            row=r, column=4, sticky="w", pady=5)
+        r = card.grid_size()[1]
+        desc = "\n".join(f"{n}: {d}" for n, d in TEMPLATE_DESCRIPTIONS.items())
+        tk.Label(card, text=desc, font=p.fonts["small"], bg=p.card, fg=p.muted, justify="left", anchor="w").grid(
+            row=r, column=1, columnspan=5, sticky="w", pady=(0, 6))
+        self._section(card, "Labels & signatures")
+        r = card.grid_size()[1]
+        self._row(card, "Bill-to heading", "bill_to_label", 18, "e.g. Bill To, Customer, Client", r, 0)
+        r = card.grid_size()[1]
+        self._row(card, "Left signature label", "signature_prepared_label", 18, "e.g. Prepared by", r, 0)
+        self._row(card, "Left signature name", "signature_prepared_name", 18, "blank = logged-in user", r, 1)
+        r = card.grid_size()[1]
+        self._row(card, "Right signature label", "signature_received_label", 18, "e.g. Received by", r, 0)
+        self._row(card, "Right signature name", "signature_received_name", 18, "blank = written by hand", r, 1)
+        self._section(card, "What to show on PDFs by default (each invoice can override these)")
+        current = self.app.db.display_defaults()
+        r = card.grid_size()[1]
+        grid = tk.Frame(card, bg=p.card)
+        grid.grid(row=r, column=0, columnspan=6, sticky="w")
+        keys = list(DISPLAY_DEFAULTS.keys())
+        for i, key in enumerate(keys):
+            var = tk.BooleanVar(value=bool(current.get(key, DISPLAY_DEFAULTS[key])))
+            self.display_vars[key] = var
+            tb.Checkbutton(grid, text=DISPLAY_LABELS.get(key, key), variable=var, bootstyle="round-toggle").grid(
+                row=i % 11, column=i // 11, sticky="w", padx=(0, 30), pady=3)
 
     def tab_payments(self):
         card = self._tab("Payment methods")
@@ -189,6 +238,51 @@ class SettingsPage(tk.Frame):
         mv.pack(anchor="w", pady=(8, 0))
         button(mv, "Move up", lambda: self.move_method(-1), "secondary-outline").pack(side="left")
         button(mv, "Move down", lambda: self.move_method(1), "secondary-outline").pack(side="left", padx=(6, 0))
+
+    def tab_inventory(self):
+        card = self._tab("Inventory")
+        card.grid_columnconfigure(1, weight=1)
+        card.grid_columnconfigure(4, weight=1)
+        self._section(card, "Stock rules")
+        r = card.grid_size()[1]
+        self._row(card, "Low stock alert at", "low_stock_threshold", 10, "units - products can set their own level", r, 0)
+        r = card.grid_size()[1]
+        self._toggle(card, "Allow invoices to exceed stock (negative stock)", "allow_negative_stock",
+                     "off = an invoice cannot sell more than you have", r, 0)
+        self._section(card, "Purchase & return numbering")
+        r = card.grid_size()[1]
+        self._row(card, "Purchase prefix", "purchase_prefix", 12, "", r, 0)
+        self._row(card, "Next purchase no.", "purchase_next_number", 10, "", r, 1)
+        r = card.grid_size()[1]
+        self._row(card, "Return prefix", "return_prefix", 12, "", r, 0)
+        self._row(card, "Next return no.", "return_next_number", 10, "", r, 1)
+
+    def tab_users(self):
+        card = self._tab("Users")
+        p = self.app.palette
+        card.grid_columnconfigure(1, weight=1)
+        self._section(card, "Access")
+        r = card.grid_size()[1]
+        self._toggle(card, "Require sign-in when the app starts", "require_login",
+                     "off = opens straight away as the first owner", r, 0)
+        self._section(card, "Accounts")
+        r = card.grid_size()[1]
+        box = tk.Frame(card, bg=p.card)
+        box.grid(row=r, column=0, columnspan=6, sticky="ew")
+        self.users_table = DataTable(box, self.app, [
+            {"key": "username", "title": "Username", "width": 160}, {"key": "full_name", "title": "Name", "width": 220, "stretch": True},
+            {"key": "role", "title": "Role", "width": 100}, {"key": "active", "title": "Status", "width": 90},
+            {"key": "created", "title": "Created", "width": 140}], height=7, on_double=lambda row: self.edit_user())
+        self.users_table.pack(fill="x")
+        acts = tk.Frame(card, bg=p.card)
+        acts.grid(row=r + 1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        button(acts, "+ Add user", self.add_user, "primary").pack(side="left")
+        button(acts, "Edit / reset password", self.edit_user, "outline").pack(side="left", padx=(8, 0))
+        button(acts, "Delete", self.delete_user, "danger-outline").pack(side="left", padx=(8, 0))
+        tk.Label(card, text="Owners: everything. Employees: dashboard (no money), invoices, quotations, customers, "
+                            "products (no cost prices) and stock levels.", font=p.fonts["small"], bg=p.card, fg=p.muted,
+                 justify="left").grid(row=r + 2, column=0, columnspan=6, sticky="w", pady=(10, 0))
+        self.refresh_users()
 
     def tab_appearance(self):
         card = self._tab("Appearance")
@@ -244,9 +338,45 @@ class SettingsPage(tk.Frame):
         button(row, "Back up database...", self.backup, "primary").pack(side="left")
         button(row, "Restore from backup...", self.restore, "danger-outline").pack(side="left", padx=(8, 0))
         button(row, "Open data folder", lambda: open_file(data_dir()), "secondary-outline").pack(side="left", padx=(8, 0))
-        tk.Label(card, text="A backup is a complete copy of the .db file. Restoring replaces ALL current data with the "
-                            "backup (a safety copy named *.before-restore is kept next to the database).",
+        tk.Label(card, text="A backup is a complete copy of the .db file (customers, invoices, stock, users...). Restoring "
+                            "replaces ALL current data (a safety copy *.before-restore is kept next to the database).",
                  font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=700, justify="left").pack(anchor="w", pady=(10, 0))
+
+    # ------------------------------------------------------------------ users
+    def refresh_users(self):
+        rows = models.list_users(self.app.db)
+        self.users_table.set_rows(rows, lambda u: [u["username"], u["full_name"], u["role"].title(),
+                                                   "Active" if u["active"] else "Disabled", (u["created_at"] or "")[:10]])
+
+    def add_user(self):
+        from ui_auth import UserDialog
+        if UserDialog(self, self.app).show():
+            self.refresh_users()
+
+    def edit_user(self):
+        from ui_auth import UserDialog
+        row = self.users_table.selected()
+        if not row:
+            show_info(self, "Select a user first.", "No selection")
+            return
+        if UserDialog(self, self.app, row).show():
+            self.refresh_users()
+
+    def delete_user(self):
+        row = self.users_table.selected()
+        if not row:
+            show_info(self, "Select a user first.", "No selection")
+            return
+        if row["id"] == (self.app.user or {}).get("id"):
+            show_error(self, "You cannot delete the account you are signed in with.")
+            return
+        if ask_yes_no(self, f"Delete user '{row['username']}'?", "Delete user"):
+            try:
+                models.delete_user(self.app.db, row["id"])
+            except models.ValidationError as e:
+                show_error(self, str(e))
+                return
+            self.refresh_users()
 
     # ------------------------------------------------------------------ logo
     def update_logo_preview(self):
@@ -264,8 +394,7 @@ class SettingsPage(tk.Frame):
             except Exception:
                 pass
         self._logo_image = None
-        self.logo_preview.configure(image="", text="No logo" if not name else "Logo file missing", width=28, height=6,
-                                    bg=p.subtle)
+        self.logo_preview.configure(image="", text="No logo" if not name else "Logo file missing", width=28, height=6, bg=p.subtle)
 
     def choose_logo(self):
         path = ask_open_path(self, "Choose logo image", [("Images", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All files", "*.*")])
@@ -385,17 +514,19 @@ class SettingsPage(tk.Frame):
         for key, lo, hi in (("default_tax_rate", 0, 100), ("invoice_due_days", 0, 3650), ("quotation_valid_days", 0, 3650),
                             ("invoice_number_padding", 0, 10), ("quotation_number_padding", 0, 10),
                             ("invoice_next_number", 1, 10 ** 9), ("quotation_next_number", 1, 10 ** 9),
-                            ("ui_font_size", 8, 14)):
+                            ("purchase_next_number", 1, 10 ** 9), ("return_next_number", 1, 10 ** 9),
+                            ("low_stock_threshold", 0, 10 ** 9), ("ui_font_size", 8, 14)):
             v = parse_float(data.get(key), None)
             if v is None or v < lo or v > hi:
                 show_error(self, f"'{key.replace('_', ' ')}' must be a number between {lo} and {hi}.")
                 return None
-            data[key] = str(int(v)) if key != "default_tax_rate" else str(v)
+            data[key] = str(int(v)) if key not in ("default_tax_rate", "low_stock_threshold") else str(v)
         for key in THEME_KEYS[:7]:
             if not is_hex_color(data.get(key, "")):
                 show_error(self, f"'{key.replace('_', ' ')}' must be a hex color like #2563eb.")
                 return None
         data["payment_methods"] = json.dumps(list(self.methods.get(0, "end")))
+        data["doc_display_defaults"] = json.dumps({k: (1 if v.get() else 0) for k, v in self.display_vars.items()})
         data.setdefault("company_logo", "")
         return data
 

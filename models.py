@@ -1,14 +1,17 @@
-"""Domain logic: CRUD repositories, totals, status, numbering, dashboard stats.
+"""Domain logic: CRUD repositories, totals, status, numbering, stock, purchases, returns, users, stats.
 
 Everything here works on plain dicts (sqlite rows) and a Database instance.
 """
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import re
+import secrets
 
-from db import Database
-from utils import now_stamp, parse_date, parse_float, parse_int, round2, today_iso, add_days
+from db import DISPLAY_DEFAULTS, Database
+from utils import add_days, now_stamp, parse_date, parse_float, parse_int, round2, today_iso
 
 INVOICE = "invoice"
 QUOTATION = "quotation"
@@ -17,7 +20,6 @@ STATUS_UNPAID = "Unpaid"
 STATUS_PARTIAL = "Partially Paid"
 STATUS_PAID = "Paid"
 STATUS_OVERDUE = "Overdue"
-# quotation statuses (also computed, never stored)
 STATUS_OPEN = "Open"
 STATUS_CONVERTED = "Converted"
 STATUS_EXPIRED = "Expired"
@@ -26,6 +28,17 @@ INVOICE_STATUSES = [STATUS_UNPAID, STATUS_PARTIAL, STATUS_PAID, STATUS_OVERDUE]
 QUOTATION_STATUSES = [STATUS_OPEN, STATUS_CONVERTED, STATUS_EXPIRED]
 
 DOC_LABEL = {INVOICE: "Invoice", QUOTATION: "Quotation"}
+
+ROLE_OWNER = "owner"
+ROLE_EMPLOYEE = "employee"
+
+MOVE_PURCHASE = "purchase"
+MOVE_SALE = "sale"
+MOVE_CUSTOMER_RETURN = "customer_return"
+MOVE_VENDOR_RETURN = "vendor_return"
+MOVE_ADJUSTMENT = "adjustment"
+MOVE_LABELS = {MOVE_PURCHASE: "Purchase", MOVE_SALE: "Sale", MOVE_CUSTOMER_RETURN: "Customer return",
+               MOVE_VENDOR_RETURN: "Return to vendor", MOVE_ADJUSTMENT: "Adjustment"}
 
 
 class ValidationError(Exception):
@@ -38,6 +51,10 @@ class OverpaymentError(ValidationError):
         super().__init__(f"Payment of {amount:,.2f} exceeds the remaining balance of {remaining:,.2f}.")
 
 
+class StockError(ValidationError):
+    """Not enough stock for one or more lines."""
+
+
 # =========================================================================== helpers
 def _clean(text) -> str:
     return (text or "").strip() if isinstance(text, str) else ("" if text is None else str(text))
@@ -47,13 +64,105 @@ def _like(term: str) -> str:
     return f"%{_clean(term)}%"
 
 
+def _user_name(user) -> str:
+    if not user:
+        return ""
+    if isinstance(user, dict):
+        return user.get("full_name") or user.get("username") or ""
+    return str(user)
+
+
+# =========================================================================== users / auth
+def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
+    return digest, salt
+
+
+def count_users(db: Database) -> int:
+    return int(db.scalar("SELECT COUNT(*) FROM users", (), 0) or 0)
+
+
+def list_users(db: Database) -> list[dict]:
+    return db.query("SELECT id, username, full_name, role, active, created_at FROM users ORDER BY role, username COLLATE NOCASE")
+
+
+def get_user(db: Database, user_id) -> dict | None:
+    return db.query_one("SELECT id, username, full_name, role, active, created_at FROM users WHERE id = ?", (user_id,))
+
+
+def create_user(db: Database, username: str, password: str, role: str = ROLE_EMPLOYEE, full_name: str = "") -> int:
+    username = _clean(username)
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{2,40}", username):
+        raise ValidationError("Username must be 2-40 characters (letters, numbers, . _ - @).")
+    if len(password or "") < 4:
+        raise ValidationError("Password must be at least 4 characters.")
+    if role not in (ROLE_OWNER, ROLE_EMPLOYEE):
+        raise ValidationError("Role must be owner or employee.")
+    if db.scalar("SELECT COUNT(*) FROM users WHERE username = ? COLLATE NOCASE", (username,), 0):
+        raise ValidationError(f"Username '{username}' is already taken.")
+    digest, salt = hash_password(password)
+    cur = db.execute(
+        "INSERT INTO users(username, full_name, role, password_hash, salt, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+        (username, _clean(full_name), role, digest, salt, now_stamp()),
+    )
+    db.log("user", f"Added {role} account {username}", "user", cur.lastrowid)
+    return int(cur.lastrowid)
+
+
+def update_user(db: Database, user_id: int, full_name=None, role=None, active=None, password=None) -> None:
+    user = get_user(db, user_id)
+    if not user:
+        raise ValidationError("User not found.")
+    if role is not None and role not in (ROLE_OWNER, ROLE_EMPLOYEE):
+        raise ValidationError("Role must be owner or employee.")
+    owners = db.scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND active = 1", (), 0)
+    demoting = (role == ROLE_EMPLOYEE or active == 0) and user["role"] == ROLE_OWNER and user["active"]
+    if demoting and owners <= 1:
+        raise ValidationError("There must always be at least one active owner account.")
+    if full_name is not None:
+        db.execute("UPDATE users SET full_name = ? WHERE id = ?", (_clean(full_name), user_id))
+    if role is not None:
+        db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+    if active is not None:
+        db.execute("UPDATE users SET active = ? WHERE id = ?", (1 if active else 0, user_id))
+    if password:
+        if len(password) < 4:
+            raise ValidationError("Password must be at least 4 characters.")
+        digest, salt = hash_password(password)
+        db.execute("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?", (digest, salt, user_id))
+    db.log("user", f"Updated account {user['username']}", "user", user_id)
+
+
+def delete_user(db: Database, user_id: int) -> None:
+    user = get_user(db, user_id)
+    if not user:
+        return
+    if user["role"] == ROLE_OWNER and db.scalar("SELECT COUNT(*) FROM users WHERE role = 'owner'", (), 0) <= 1:
+        raise ValidationError("You cannot delete the last owner account.")
+    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    db.log("user", f"Deleted account {user['username']}", "user", user_id)
+
+
+def authenticate(db: Database, username: str, password: str) -> dict | None:
+    row = db.query_one("SELECT * FROM users WHERE username = ? COLLATE NOCASE AND active = 1", (_clean(username),))
+    if not row:
+        return None
+    digest, _ = hash_password(password or "", row["salt"])
+    if not secrets.compare_digest(digest, row["password_hash"]):
+        return None
+    return {k: row[k] for k in ("id", "username", "full_name", "role", "active")}
+
+
 # =========================================================================== customers
 def list_customers(db: Database, search: str = "") -> list[dict]:
     sql = """
         SELECT c.*,
                COALESCE((SELECT SUM(d.total) FROM documents d WHERE d.customer_id = c.id AND d.doc_type = 'invoice'), 0)
                - COALESCE((SELECT SUM(p.amount) FROM payments p JOIN documents d ON d.id = p.invoice_id
-                           WHERE d.customer_id = c.id), 0) AS balance,
+                           WHERE d.customer_id = c.id), 0)
+               - COALESCE((SELECT SUM(r.total) FROM returns r JOIN documents d ON d.id = r.invoice_id
+                           WHERE d.customer_id = c.id AND r.kind = 'customer'), 0) AS balance,
                (SELECT COUNT(*) FROM documents d WHERE d.customer_id = c.id AND d.doc_type = 'invoice') AS invoice_count
         FROM customers c
     """
@@ -78,14 +187,12 @@ def get_customer(db: Database, customer_id) -> dict | None:
 
 
 def customer_balance(db: Database, customer_id) -> float:
-    invoiced = db.scalar(
-        "SELECT SUM(total) FROM documents WHERE customer_id = ? AND doc_type = 'invoice'", (customer_id,), 0
-    )
-    paid = db.scalar(
-        "SELECT SUM(p.amount) FROM payments p JOIN documents d ON d.id = p.invoice_id WHERE d.customer_id = ?",
-        (customer_id,), 0,
-    )
-    return round2((invoiced or 0) - (paid or 0))
+    invoiced = db.scalar("SELECT SUM(total) FROM documents WHERE customer_id = ? AND doc_type = 'invoice'", (customer_id,), 0)
+    paid = db.scalar("SELECT SUM(p.amount) FROM payments p JOIN documents d ON d.id = p.invoice_id WHERE d.customer_id = ?",
+                     (customer_id,), 0)
+    credit = db.scalar("SELECT SUM(r.total) FROM returns r JOIN documents d ON d.id = r.invoice_id"
+                       " WHERE d.customer_id = ? AND r.kind = 'customer'", (customer_id,), 0)
+    return round2((invoiced or 0) - (paid or 0) - (credit or 0))
 
 
 def save_customer(db: Database, data: dict) -> int:
@@ -97,10 +204,7 @@ def save_customer(db: Database, data: dict) -> int:
     values[0] = name
     cid = data.get("id")
     if cid:
-        db.execute(
-            "UPDATE customers SET " + ", ".join(f"{f} = ?" for f in fields) + " WHERE id = ?",
-            (*values, cid),
-        )
+        db.execute("UPDATE customers SET " + ", ".join(f"{f} = ?" for f in fields) + " WHERE id = ?", (*values, cid))
         db.log("customer", f"Updated customer {name}", "customer", cid)
         return int(cid)
     cur = db.execute(
@@ -114,9 +218,7 @@ def save_customer(db: Database, data: dict) -> int:
 def delete_customer(db: Database, customer_id: int) -> None:
     count = db.scalar("SELECT COUNT(*) FROM documents WHERE customer_id = ?", (customer_id,), 0)
     if count:
-        raise ValidationError(
-            f"This customer has {count} invoice(s)/quotation(s). Delete or reassign those documents first."
-        )
+        raise ValidationError(f"This customer has {count} invoice(s)/quotation(s). Delete or reassign those documents first.")
     row = get_customer(db, customer_id)
     db.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
     if row:
@@ -125,12 +227,17 @@ def delete_customer(db: Database, customer_id: int) -> None:
 
 # =========================================================================== vendors
 def list_vendors(db: Database, search: str = "") -> list[dict]:
-    sql = "SELECT * FROM vendors"
+    sql = """
+        SELECT v.*,
+               (SELECT COUNT(*) FROM purchases p WHERE p.vendor_id = v.id) AS purchase_count,
+               COALESCE((SELECT SUM(p.total) FROM purchases p WHERE p.vendor_id = v.id), 0) AS purchased_total
+        FROM vendors v
+    """
     params: list = []
     if _clean(search):
-        sql += " WHERE name LIKE ? OR company LIKE ? OR email LIKE ? OR phone LIKE ?"
+        sql += " WHERE v.name LIKE ? OR v.company LIKE ? OR v.email LIKE ? OR v.phone LIKE ?"
         params = [_like(search)] * 4
-    sql += " ORDER BY name COLLATE NOCASE"
+    sql += " ORDER BY v.name COLLATE NOCASE"
     return db.query(sql, params)
 
 
@@ -165,23 +272,37 @@ def delete_vendor(db: Database, vendor_id: int) -> None:
         db.log("vendor", f"Deleted vendor {row['name']}", "vendor", vendor_id)
 
 
-# =========================================================================== products
+# =========================================================================== products & stock
+_PRODUCT_SELECT = """
+    SELECT p.*, COALESCE((SELECT SUM(m.qty) FROM stock_movements m WHERE m.product_id = p.id), 0) AS stock
+    FROM products p
+"""
+
+
 def list_products(db: Database, search: str = "", active_only: bool = False) -> list[dict]:
-    sql = "SELECT * FROM products"
+    sql = _PRODUCT_SELECT
     clauses, params = [], []
     if _clean(search):
-        clauses.append("(name LIKE ? OR sku LIKE ? OR description LIKE ?)")
+        clauses.append("(p.name LIKE ? OR p.sku LIKE ? OR p.description LIKE ?)")
         params += [_like(search)] * 3
     if active_only:
-        clauses.append("active = 1")
+        clauses.append("p.active = 1")
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY name COLLATE NOCASE"
-    return db.query(sql, params)
+    sql += " ORDER BY p.name COLLATE NOCASE"
+    rows = db.query(sql, params)
+    for r in rows:
+        r["stock"] = round2(r["stock"])
+    return rows
 
 
 def get_product(db: Database, product_id) -> dict | None:
-    return db.query_one("SELECT * FROM products WHERE id = ?", (product_id,)) if product_id else None
+    if not product_id:
+        return None
+    row = db.query_one(_PRODUCT_SELECT + " WHERE p.id = ?", (product_id,))
+    if row:
+        row["stock"] = round2(row["stock"])
+    return row
 
 
 def save_product(db: Database, data: dict) -> int:
@@ -190,40 +311,109 @@ def save_product(db: Database, data: dict) -> int:
         raise ValidationError("Product/service name is required.")
     price = parse_float(data.get("unit_price"), None)
     if price is None or price < 0:
-        raise ValidationError("Unit price must be a number of 0 or more.")
+        raise ValidationError("Sale price must be a number of 0 or more.")
+    cost = parse_float(data.get("cost_price"), 0) if _clean(data.get("cost_price")) != "" else 0
+    if cost is None or cost < 0:
+        raise ValidationError("Cost price must be a number of 0 or more.")
     tax_raw = data.get("tax_rate")
     tax_rate = None
     if tax_raw not in (None, ""):
         tax_rate = parse_float(tax_raw, None)
         if tax_rate is None or tax_rate < 0 or tax_rate > 100:
             raise ValidationError("Tax rate override must be between 0 and 100, or left blank.")
+    low = parse_float(data.get("low_stock_level"), 0) if _clean(data.get("low_stock_level")) != "" else 0
     active = 1 if data.get("active", 1) in (1, True, "1", "True", "true") else 0
-    values = (
-        _clean(data.get("sku")), name, _clean(data.get("description")), round2(price),
-        _clean(data.get("unit")) or "pcs", tax_rate, active,
-    )
+    track = 1 if data.get("track_stock", 1) in (1, True, "1", "True", "true") else 0
+    values = (_clean(data.get("sku")), name, _clean(data.get("description")), round2(price),
+              _clean(data.get("unit")) or "pcs", tax_rate, active, round2(cost), track, max(0.0, low or 0))
     pid = data.get("id")
     if pid:
         db.execute(
-            "UPDATE products SET sku=?, name=?, description=?, unit_price=?, unit=?, tax_rate=?, active=? WHERE id=?",
-            (*values, pid),
-        )
+            "UPDATE products SET sku=?, name=?, description=?, unit_price=?, unit=?, tax_rate=?, active=?,"
+            " cost_price=?, track_stock=?, low_stock_level=? WHERE id=?", (*values, pid))
         db.log("product", f"Updated product {name}", "product", pid)
         return int(pid)
     cur = db.execute(
-        "INSERT INTO products(sku, name, description, unit_price, unit, tax_rate, active, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (*values, now_stamp()),
-    )
+        "INSERT INTO products(sku, name, description, unit_price, unit, tax_rate, active, cost_price, track_stock,"
+        " low_stock_level, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (*values, now_stamp()))
+    opening = parse_float(data.get("opening_stock"), 0) or 0
+    if opening > 0:
+        _insert_movement(db, cur.lastrowid, opening, MOVE_ADJUSTMENT, "product", cur.lastrowid, cost or 0,
+                         today_iso(), "Opening stock")
     db.log("product", f"Added product {name}", "product", cur.lastrowid)
     return int(cur.lastrowid)
 
 
 def delete_product(db: Database, product_id: int) -> None:
     row = get_product(db, product_id)
-    db.execute("DELETE FROM products WHERE id = ?", (product_id,))  # items keep their text (ON DELETE SET NULL)
+    db.execute("DELETE FROM products WHERE id = ?", (product_id,))  # items keep their text; movements cascade
     if row:
         db.log("product", f"Deleted product {row['name']}", "product", product_id)
+
+
+def _insert_movement(db_or_conn, product_id, qty, kind, ref_type, ref_id, unit_cost, date, note=""):
+    sql = ("INSERT INTO stock_movements(product_id, qty, kind, ref_type, ref_id, unit_cost, date, note, created_at)"
+           " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    params = (product_id, round2(qty), kind, ref_type, ref_id, round2(unit_cost or 0), date, _clean(note), now_stamp())
+    if isinstance(db_or_conn, Database):
+        db_or_conn.execute(sql, params)
+    else:
+        db_or_conn.execute(sql, params)
+
+
+def stock_level(db: Database, product_id, exclude_ref: tuple | None = None) -> float:
+    sql = "SELECT SUM(qty) FROM stock_movements WHERE product_id = ?"
+    params: list = [product_id]
+    if exclude_ref:
+        sql += " AND NOT (ref_type = ? AND ref_id = ?)"
+        params += list(exclude_ref)
+    return round2(db.scalar(sql, params, 0) or 0)
+
+
+def adjust_stock(db: Database, product_id: int, new_qty, note: str = "", user=None) -> None:
+    prod = get_product(db, product_id)
+    if not prod:
+        raise ValidationError("Product not found.")
+    target = parse_float(new_qty, None)
+    if target is None or target < 0:
+        raise ValidationError("Stock quantity must be a number of 0 or more.")
+    delta = round2(target - prod["stock"])
+    if abs(delta) < 0.0001:
+        return
+    _insert_movement(db, product_id, delta, MOVE_ADJUSTMENT, "adjustment", None, prod.get("cost_price") or 0,
+                     today_iso(), note or f"Adjusted by {_user_name(user) or 'user'}")
+    db.log("stock", f"Stock of {prod['name']} set to {target:g}", "product", product_id)
+
+
+def stock_history(db: Database, product_id=None, limit: int = 200) -> list[dict]:
+    sql = "SELECT m.*, p.name AS product_name, p.unit FROM stock_movements m JOIN products p ON p.id = m.product_id"
+    params: list = []
+    if product_id:
+        sql += " WHERE m.product_id = ?"
+        params.append(product_id)
+    sql += " ORDER BY m.date DESC, m.id DESC LIMIT ?"
+    params.append(limit)
+    rows = db.query(sql, params)
+    for r in rows:
+        r["kind_label"] = MOVE_LABELS.get(r["kind"], r["kind"])
+    return rows
+
+
+def low_stock_products(db: Database, threshold: float | None = None) -> list[dict]:
+    if threshold is None:
+        threshold = parse_float(db.get_setting("low_stock_threshold", "5"), 5) or 0
+    out = []
+    for p in list_products(db, active_only=True):
+        if not p.get("track_stock"):
+            continue
+        level = p["low_stock_level"] if (p.get("low_stock_level") or 0) > 0 else threshold
+        if p["stock"] <= level:
+            out.append(p)
+    return out
+
+
+def stock_value(db: Database) -> float:
+    return round2(sum(max(p["stock"], 0) * float(p.get("cost_price") or 0) for p in list_products(db) if p.get("track_stock")))
 
 
 # =========================================================================== numbering
@@ -256,8 +446,11 @@ def number_exists(db: Database, doc_type: str, number: str, exclude_id=None) -> 
 
 
 def bump_counter(db: Database, doc_type: str, number: str) -> None:
-    """After saving a document numbered like the prefix pattern, advance the counter past it."""
     k_prefix, k_next, _ = _num_keys(doc_type)
+    _bump(db, k_prefix, k_next, number)
+
+
+def _bump(db: Database, k_prefix: str, k_next: str, number: str) -> None:
     prefix = db.get_setting(k_prefix, "")
     m = re.fullmatch(re.escape(prefix) + r"(\d+)", _clean(number))
     if not m:
@@ -266,6 +459,25 @@ def bump_counter(db: Database, doc_type: str, number: str) -> None:
     current = parse_int(db.get_setting(k_next, "1"), 1) or 1
     if used >= current:
         db.set_setting(k_next, str(used + 1))
+
+
+def _next_simple(db: Database, table: str, k_prefix: str, k_next: str) -> str:
+    prefix = db.get_setting(k_prefix, "")
+    counter = max(1, parse_int(db.get_setting(k_next, "1"), 1) or 1)
+    for _ in range(10000):
+        cand = f"{prefix}{str(counter).zfill(4)}"
+        if not db.scalar(f"SELECT COUNT(*) FROM {table} WHERE number = ?", (cand,), 0):
+            return cand
+        counter += 1
+    return f"{prefix}{counter}"
+
+
+def next_purchase_number(db: Database) -> str:
+    return _next_simple(db, "purchases", "purchase_prefix", "purchase_next_number")
+
+
+def next_return_number(db: Database) -> str:
+    return _next_simple(db, "returns", "return_prefix", "return_next_number")
 
 
 # =========================================================================== totals
@@ -277,7 +489,7 @@ def normalize_items(raw_items: list[dict], default_tax_rate: float) -> list[dict
         qty = parse_float(raw.get("quantity"), None)
         price = parse_float(raw.get("unit_price"), None)
         if not desc and qty in (None, 0) and price in (None, 0):
-            continue  # skip completely empty rows
+            continue
         if not desc:
             raise ValidationError(f"Line {idx}: description is required.")
         if qty is None:
@@ -300,15 +512,14 @@ def normalize_items(raw_items: list[dict], default_tax_rate: float) -> list[dict
             "effective_tax_rate": default_tax_rate if tax_rate is None else tax_rate,
             "line_total": round2(qty * price),
             "sort_order": idx,
+            "sku": _clean(raw.get("sku")),
+            "cost_price": parse_float(raw.get("cost_price"), 0) or 0,
         })
     return items
 
 
 def compute_totals(items: list[dict], discount_type: str, discount_value, default_tax_rate) -> dict:
-    """Subtotal -> discount (percent or fixed, on subtotal) -> tax (per line, after discount) -> total.
-
-    Safe on empty lists and bad numbers (treated as 0).
-    """
+    """Subtotal -> discount (percent or fixed) -> tax (per line, after discount) -> total. Never raises."""
     default_tax_rate = parse_float(default_tax_rate, 0) or 0
     discount_value = parse_float(discount_value, 0) or 0
     subtotal = round2(sum(float(i.get("line_total") or 0) for i in items))
@@ -351,10 +562,46 @@ def compute_status(doc_type: str, total: float, paid: float, due_date, converted
     return STATUS_UNPAID
 
 
+# =========================================================================== display options
+def parse_display_options(raw) -> dict:
+    """Merge a JSON string / dict of switches with the built-in defaults."""
+    opts = dict(DISPLAY_DEFAULTS)
+    data = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            data = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k in opts:
+                opts[k] = 1 if v in (1, True, "1", "true", "True") else 0
+    return opts
+
+
+def document_display_options(db: Database, doc: dict) -> dict:
+    """Effective switches for a document: settings defaults overridden by the document's own JSON."""
+    base = db.display_defaults()
+    raw = (doc or {}).get("display_options") or ""
+    if not raw.strip():
+        return base
+    try:
+        own = json.loads(raw)
+    except Exception:
+        return base
+    out = dict(base)
+    if isinstance(own, dict):
+        for k, v in own.items():
+            if k in out:
+                out[k] = 1 if v in (1, True, "1", "true", "True") else 0
+    return out
+
+
 # =========================================================================== documents
 _DOC_SELECT = """
     SELECT d.*, c.name AS customer_name, c.company AS customer_company,
            COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = d.id), 0) AS paid,
+           COALESCE((SELECT SUM(r.total) FROM returns r WHERE r.invoice_id = d.id AND r.kind = 'customer'), 0) AS credit,
            (SELECT COUNT(*) FROM documents x WHERE x.source_quotation_id = d.id) AS converted_count,
            (SELECT COUNT(*) FROM document_items i WHERE i.document_id = d.id) AS item_count
     FROM documents d LEFT JOIN customers c ON c.id = d.customer_id
@@ -363,8 +610,9 @@ _DOC_SELECT = """
 
 def _decorate(row: dict) -> dict:
     row["paid"] = round2(row.get("paid") or 0)
-    row["balance"] = round2(float(row.get("total") or 0) - row["paid"])
-    row["status"] = compute_status(row["doc_type"], row.get("total"), row["paid"], row.get("due_date"),
+    row["credit"] = round2(row.get("credit") or 0)
+    row["balance"] = round2(float(row.get("total") or 0) - row["paid"] - row["credit"])
+    row["status"] = compute_status(row["doc_type"], row.get("total"), row["paid"] + row["credit"], row.get("due_date"),
                                    bool(row.get("converted_count")))
     row["customer_display"] = row.get("customer_name") or "(no customer)"
     if row.get("customer_company"):
@@ -403,14 +651,37 @@ def get_document(db: Database, doc_id) -> dict | None:
     if not row:
         return None
     _decorate(row)
-    row["items"] = db.query("SELECT * FROM document_items WHERE document_id = ? ORDER BY sort_order, id", (doc_id,))
+    row["items"] = db.query(
+        "SELECT i.*, COALESCE(NULLIF(i.sku, ''), p.sku, '') AS sku_display FROM document_items i"
+        " LEFT JOIN products p ON p.id = i.product_id WHERE i.document_id = ? ORDER BY i.sort_order, i.id", (doc_id,))
     row["payments"] = db.query("SELECT * FROM payments WHERE invoice_id = ? ORDER BY date, id", (doc_id,))
+    row["returns"] = db.query("SELECT * FROM returns WHERE invoice_id = ? ORDER BY date, id", (doc_id,))
     row["customer"] = get_customer(db, row.get("customer_id"))
+    if row.get("source_quotation_id"):
+        src = db.query_one("SELECT number FROM documents WHERE id = ?", (row["source_quotation_id"],))
+        row["source_quotation_number"] = src["number"] if src else ""
     return row
 
 
-def save_document(db: Database, data: dict, raw_items: list[dict]) -> int:
-    """Insert or update a document with its items. Validates everything first."""
+def check_stock_for_items(db: Database, items: list[dict], exclude_doc_id=None) -> list[str]:
+    """Return human-readable problems for lines that exceed available stock (empty list = OK)."""
+    needed: dict[int, float] = {}
+    for i in items:
+        if i.get("product_id"):
+            needed[i["product_id"]] = needed.get(i["product_id"], 0) + float(i.get("quantity") or 0)
+    problems = []
+    for pid, qty in needed.items():
+        prod = get_product(db, pid)
+        if not prod or not prod.get("track_stock"):
+            continue
+        available = stock_level(db, pid, ("invoice", exclude_doc_id) if exclude_doc_id else None)
+        if qty > available + 0.0001:
+            problems.append(f"{prod['name']}: only {available:g} {prod.get('unit') or ''} in stock, you entered {qty:g}")
+    return problems
+
+
+def save_document(db: Database, data: dict, raw_items: list[dict], user=None) -> int:
+    """Insert or update a document with its items. Validates everything, keeps stock in sync for invoices."""
     doc_type = data.get("doc_type") or INVOICE
     if doc_type not in (INVOICE, QUOTATION):
         raise ValidationError("Unknown document type.")
@@ -443,7 +714,22 @@ def save_document(db: Database, data: dict, raw_items: list[dict]) -> int:
         raise ValidationError("Percentage discount cannot exceed 100%.")
 
     items = normalize_items(raw_items, tax_rate)
+    # snapshot SKU + cost from the product so profit and PDFs stay stable later
+    for i in items:
+        if i["product_id"]:
+            prod = get_product(db, i["product_id"])
+            if prod:
+                i["sku"] = i["sku"] or prod.get("sku") or ""
+                i["cost_price"] = float(prod.get("cost_price") or 0)
+    if doc_type == INVOICE and db.get_setting("allow_negative_stock", "0") != "1":
+        problems = check_stock_for_items(db, items, exclude_doc_id=doc_id)
+        if problems:
+            raise StockError("Not enough stock:\n- " + "\n- ".join(problems))
+
     totals = compute_totals(items, discount_type, discount_value, tax_rate)
+    display = data.get("display_options")
+    if isinstance(display, dict):
+        display = json.dumps(display)
     ts = now_stamp()
     cols = {
         "doc_type": doc_type, "number": number, "customer_id": customer_id,
@@ -452,6 +738,9 @@ def save_document(db: Database, data: dict, raw_items: list[dict]) -> int:
         "notes": _clean(data.get("notes")), "terms": _clean(data.get("terms")),
         "discount_type": discount_type, "discount_value": discount_value, "tax_rate": tax_rate,
         **totals, "source_quotation_id": data.get("source_quotation_id") or None, "updated_at": ts,
+        "bill_to_label": _clean(data.get("bill_to_label")), "bill_to_text": _clean(data.get("bill_to_text")),
+        "display_options": _clean(display), "prepared_by": _clean(data.get("prepared_by")),
+        "received_by": _clean(data.get("received_by")),
     }
     with db.transaction() as conn:
         if doc_id:
@@ -460,26 +749,34 @@ def save_document(db: Database, data: dict, raw_items: list[dict]) -> int:
             conn.execute("DELETE FROM document_items WHERE document_id = ?", (doc_id,))
         else:
             cols["created_at"] = ts
-            cur = conn.execute(
-                f"INSERT INTO documents({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                tuple(cols.values()),
-            )
+            cols["created_by"] = _clean(data.get("created_by")) or _user_name(user)
+            cur = conn.execute(f"INSERT INTO documents({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                               tuple(cols.values()))
             doc_id = cur.lastrowid
         conn.executemany(
             "INSERT INTO document_items(document_id, product_id, description, quantity, unit, unit_price,"
-            " tax_rate, line_total, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " tax_rate, line_total, sort_order, sku, cost_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(doc_id, i["product_id"], i["description"], i["quantity"], i["unit"], i["unit_price"],
-              i["tax_rate"], i["line_total"], i["sort_order"]) for i in items],
-        )
+              i["tax_rate"], i["line_total"], i["sort_order"], i["sku"], i["cost_price"]) for i in items])
+        conn.execute("DELETE FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = ?", (doc_id,))
+        if doc_type == INVOICE:
+            for i in items:
+                if i["product_id"]:
+                    prod = get_product(db, i["product_id"])
+                    if prod and prod.get("track_stock"):
+                        _insert_movement(conn, i["product_id"], -float(i["quantity"]), MOVE_SALE, "invoice", doc_id,
+                                         i["cost_price"], date.isoformat(), f"Invoice {number}")
     bump_counter(db, doc_type, number)
-    db.log(doc_type, f"{'Updated' if data.get('id') else 'Created'} {DOC_LABEL[doc_type].lower()} {number}",
-           doc_type, doc_id)
+    db.log(doc_type, f"{'Updated' if data.get('id') else 'Created'} {DOC_LABEL[doc_type].lower()} {number}"
+                     + (f" ({_user_name(user)})" if user else ""), doc_type, doc_id)
     return int(doc_id)
 
 
 def delete_document(db: Database, doc_id: int) -> None:
     row = db.query_one("SELECT doc_type, number FROM documents WHERE id = ?", (doc_id,))
-    db.execute("DELETE FROM documents WHERE id = ?", (doc_id,))  # items & payments cascade
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = ?", (doc_id,))
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))  # items & payments cascade
     if row:
         db.log(row["doc_type"], f"Deleted {DOC_LABEL[row['doc_type']].lower()} {row['number']}", row["doc_type"], doc_id)
 
@@ -492,29 +789,31 @@ def _copy_payload(src: dict, doc_type: str, db: Database) -> tuple[dict, list[di
         "date": today_iso(), "due_date": add_days(today_iso(), days), "template": src.get("template"),
         "currency": src.get("currency"), "notes": src.get("notes"), "terms": src.get("terms"),
         "discount_type": src.get("discount_type"), "discount_value": src.get("discount_value"),
-        "tax_rate": src.get("tax_rate"),
+        "tax_rate": src.get("tax_rate"), "bill_to_label": src.get("bill_to_label"),
+        "bill_to_text": src.get("bill_to_text"), "display_options": src.get("display_options"),
+        "prepared_by": src.get("prepared_by"), "received_by": src.get("received_by"),
     }
     items = [dict(i) for i in src.get("items", [])]
     return data, items
 
 
-def duplicate_document(db: Database, doc_id: int) -> int:
+def duplicate_document(db: Database, doc_id: int, user=None) -> int:
     src = get_document(db, doc_id)
     if not src:
         raise ValidationError("Document not found.")
     data, items = _copy_payload(src, src["doc_type"], db)
-    new_id = save_document(db, data, items)
+    new_id = save_document(db, data, items, user)
     db.log(src["doc_type"], f"Duplicated {src['number']} as {data['number']}", src["doc_type"], new_id)
     return new_id
 
 
-def convert_quotation_to_invoice(db: Database, quotation_id: int) -> int:
+def convert_quotation_to_invoice(db: Database, quotation_id: int, user=None) -> int:
     src = get_document(db, quotation_id)
     if not src or src["doc_type"] != QUOTATION:
         raise ValidationError("Only quotations can be converted to invoices.")
     data, items = _copy_payload(src, INVOICE, db)
     data["source_quotation_id"] = quotation_id
-    new_id = save_document(db, data, items)
+    new_id = save_document(db, data, items, user)
     db.log(INVOICE, f"Converted quotation {src['number']} to invoice {data['number']}", INVOICE, new_id)
     return new_id
 
@@ -524,8 +823,12 @@ def invoice_paid_amount(db: Database, invoice_id: int) -> float:
     return round2(db.scalar("SELECT SUM(amount) FROM payments WHERE invoice_id = ?", (invoice_id,), 0) or 0)
 
 
+def invoice_credit_amount(db: Database, invoice_id: int) -> float:
+    return round2(db.scalar("SELECT SUM(total) FROM returns WHERE invoice_id = ? AND kind = 'customer'", (invoice_id,), 0) or 0)
+
+
 def add_payment(db: Database, invoice_id: int, amount, date, method: str = "", reference: str = "",
-                allow_overpay: bool = False) -> int:
+                allow_overpay: bool = False, user=None) -> int:
     inv = db.query_one("SELECT id, doc_type, number, total FROM documents WHERE id = ?", (invoice_id,))
     if not inv or inv["doc_type"] != INVOICE:
         raise ValidationError("Payments can only be recorded against invoices.")
@@ -536,26 +839,24 @@ def add_payment(db: Database, invoice_id: int, amount, date, method: str = "", r
     d = parse_date(date)
     if not d:
         raise ValidationError("Payment date is not valid (YYYY-MM-DD).")
-    remaining = round2(float(inv["total"]) - invoice_paid_amount(db, invoice_id))
+    remaining = round2(float(inv["total"]) - invoice_paid_amount(db, invoice_id) - invoice_credit_amount(db, invoice_id))
     if amt > remaining + 0.005 and not allow_overpay:
         raise OverpaymentError(amt, remaining)
     cur = db.execute(
-        "INSERT INTO payments(invoice_id, amount, date, method, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (invoice_id, amt, d.isoformat(), _clean(method), _clean(reference), now_stamp()),
-    )
+        "INSERT INTO payments(invoice_id, amount, date, method, reference, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (invoice_id, amt, d.isoformat(), _clean(method), _clean(reference), now_stamp(), _user_name(user)))
     db.log("payment", f"Payment of {amt:,.2f} received for {inv['number']}", "payment", cur.lastrowid)
     return int(cur.lastrowid)
 
 
-def mark_as_paid(db: Database, invoice_id: int, method: str = "", date=None) -> int | None:
-    """Record one real payment for the full remaining balance. Returns payment id or None if nothing owed."""
+def mark_as_paid(db: Database, invoice_id: int, method: str = "", date=None, user=None) -> int | None:
     inv = db.query_one("SELECT total FROM documents WHERE id = ? AND doc_type = 'invoice'", (invoice_id,))
     if not inv:
         raise ValidationError("Invoice not found.")
-    remaining = round2(float(inv["total"]) - invoice_paid_amount(db, invoice_id))
+    remaining = round2(float(inv["total"]) - invoice_paid_amount(db, invoice_id) - invoice_credit_amount(db, invoice_id))
     if remaining <= 0.005:
         return None
-    return add_payment(db, invoice_id, remaining, date or today_iso(), method, "Marked as paid")
+    return add_payment(db, invoice_id, remaining, date or today_iso(), method, "Marked as paid", user=user)
 
 
 def delete_payment(db: Database, payment_id: int) -> None:
@@ -599,7 +900,293 @@ def list_payments(db: Database, method: str = "", customer_id=None, date_from=No
     return rows
 
 
-# =========================================================================== dashboard
+# =========================================================================== purchases
+def list_purchases(db: Database, search: str = "", vendor_id=None, date_from=None, date_to=None) -> list[dict]:
+    sql = """
+        SELECT pu.*, v.name AS vendor_name, v.company AS vendor_company,
+               (SELECT COUNT(*) FROM purchase_items i WHERE i.purchase_id = pu.id) AS item_count
+        FROM purchases pu LEFT JOIN vendors v ON v.id = pu.vendor_id WHERE 1 = 1
+    """
+    params: list = []
+    if _clean(search):
+        sql += " AND (pu.number LIKE ? OR v.name LIKE ? OR pu.reference LIKE ?)"
+        params += [_like(search)] * 3
+    if vendor_id:
+        sql += " AND pu.vendor_id = ?"
+        params.append(vendor_id)
+    df, dtn = parse_date(date_from), parse_date(date_to)
+    if df:
+        sql += " AND pu.date >= ?"
+        params.append(df.isoformat())
+    if dtn:
+        sql += " AND pu.date <= ?"
+        params.append(dtn.isoformat())
+    sql += " ORDER BY pu.date DESC, pu.id DESC"
+    rows = db.query(sql, params)
+    for r in rows:
+        r["vendor_display"] = r.get("vendor_name") or "(no vendor)"
+    return rows
+
+
+def get_purchase(db: Database, purchase_id) -> dict | None:
+    row = db.query_one("SELECT pu.*, v.name AS vendor_name FROM purchases pu LEFT JOIN vendors v ON v.id = pu.vendor_id"
+                       " WHERE pu.id = ?", (purchase_id,))
+    if row:
+        row["items"] = db.query("SELECT i.*, p.name AS product_name, p.unit FROM purchase_items i"
+                                " LEFT JOIN products p ON p.id = i.product_id WHERE i.purchase_id = ?"
+                                " ORDER BY i.sort_order, i.id", (purchase_id,))
+    return row
+
+
+def save_purchase(db: Database, data: dict, raw_items: list[dict], user=None) -> int:
+    """Record goods bought from a vendor. Adds stock and updates each product's cost price."""
+    number = _clean(data.get("number")) or next_purchase_number(db)
+    pid = data.get("id")
+    dup = db.scalar("SELECT COUNT(*) FROM purchases WHERE number = ?" + (" AND id != ?" if pid else ""),
+                    (number, pid) if pid else (number,), 0)
+    if dup:
+        raise ValidationError(f"Purchase number '{number}' already exists.")
+    date = parse_date(data.get("date"))
+    if not date:
+        raise ValidationError("Date is required (YYYY-MM-DD).")
+    vendor_id = data.get("vendor_id") or None
+    items = []
+    for idx, raw in enumerate(raw_items or [], start=1):
+        product_id = raw.get("product_id") or None
+        desc = _clean(raw.get("description"))
+        qty = parse_float(raw.get("quantity"), None)
+        cost = parse_float(raw.get("unit_cost"), None)
+        if not product_id and not desc and qty in (None, 0):
+            continue
+        if not product_id:
+            raise ValidationError(f"Line {idx}: choose a product.")
+        if qty is None or qty <= 0:
+            raise ValidationError(f"Line {idx}: quantity must be greater than zero.")
+        if cost is None or cost < 0:
+            raise ValidationError(f"Line {idx}: unit cost must be a number of 0 or more.")
+        prod = get_product(db, product_id)
+        if not prod:
+            raise ValidationError(f"Line {idx}: product no longer exists.")
+        items.append({"product_id": product_id, "description": desc or prod["name"], "quantity": qty,
+                      "unit_cost": round2(cost), "line_total": round2(qty * cost), "sort_order": idx})
+    if not items:
+        raise ValidationError("Add at least one product line.")
+    total = round2(sum(i["line_total"] for i in items))
+    with db.transaction() as conn:
+        if pid:
+            conn.execute("UPDATE purchases SET number=?, vendor_id=?, date=?, reference=?, notes=?, total=? WHERE id=?",
+                         (number, vendor_id, date.isoformat(), _clean(data.get("reference")), _clean(data.get("notes")),
+                          total, pid))
+            conn.execute("DELETE FROM purchase_items WHERE purchase_id = ?", (pid,))
+            conn.execute("DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?", (pid,))
+        else:
+            cur = conn.execute(
+                "INSERT INTO purchases(number, vendor_id, date, reference, notes, total, created_by, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (number, vendor_id, date.isoformat(), _clean(data.get("reference")), _clean(data.get("notes")), total,
+                 _user_name(user), now_stamp()))
+            pid = cur.lastrowid
+        for i in items:
+            conn.execute("INSERT INTO purchase_items(purchase_id, product_id, description, quantity, unit_cost,"
+                         " line_total, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (pid, i["product_id"], i["description"], i["quantity"], i["unit_cost"], i["line_total"],
+                          i["sort_order"]))
+            _insert_movement(conn, i["product_id"], i["quantity"], MOVE_PURCHASE, "purchase", pid, i["unit_cost"],
+                             date.isoformat(), f"Purchase {number}")
+            if data.get("update_cost", True):
+                conn.execute("UPDATE products SET cost_price = ? WHERE id = ?", (i["unit_cost"], i["product_id"]))
+    _bump(db, "purchase_prefix", "purchase_next_number", number)
+    db.log("purchase", f"{'Updated' if data.get('id') else 'Recorded'} purchase {number} ({total:,.2f})", "purchase", pid)
+    return int(pid)
+
+
+def delete_purchase(db: Database, purchase_id: int) -> None:
+    row = db.query_one("SELECT number FROM purchases WHERE id = ?", (purchase_id,))
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?", (purchase_id,))
+        conn.execute("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+    if row:
+        db.log("purchase", f"Deleted purchase {row['number']}", "purchase", purchase_id)
+
+
+# =========================================================================== returns
+def list_returns(db: Database, kind: str = "", search: str = "", date_from=None, date_to=None) -> list[dict]:
+    sql = """
+        SELECT r.*, c.name AS customer_name, v.name AS vendor_name, d.number AS invoice_number, pu.number AS purchase_number,
+               (SELECT COUNT(*) FROM return_items i WHERE i.return_id = r.id) AS item_count
+        FROM returns r
+        LEFT JOIN customers c ON c.id = r.customer_id
+        LEFT JOIN vendors v ON v.id = r.vendor_id
+        LEFT JOIN documents d ON d.id = r.invoice_id
+        LEFT JOIN purchases pu ON pu.id = r.purchase_id
+        WHERE 1 = 1
+    """
+    params: list = []
+    if kind:
+        sql += " AND r.kind = ?"
+        params.append(kind)
+    if _clean(search):
+        sql += " AND (r.number LIKE ? OR c.name LIKE ? OR v.name LIKE ? OR d.number LIKE ? OR r.reason LIKE ?)"
+        params += [_like(search)] * 5
+    df, dtn = parse_date(date_from), parse_date(date_to)
+    if df:
+        sql += " AND r.date >= ?"
+        params.append(df.isoformat())
+    if dtn:
+        sql += " AND r.date <= ?"
+        params.append(dtn.isoformat())
+    sql += " ORDER BY r.date DESC, r.id DESC"
+    rows = db.query(sql, params)
+    for r in rows:
+        r["party"] = (r.get("customer_name") if r["kind"] == "customer" else r.get("vendor_name")) or "-"
+        r["ref"] = (r.get("invoice_number") if r["kind"] == "customer" else r.get("purchase_number")) or ""
+    return rows
+
+
+def get_return(db: Database, return_id) -> dict | None:
+    row = db.query_one("SELECT * FROM returns WHERE id = ?", (return_id,))
+    if row:
+        row["items"] = db.query("SELECT i.*, p.name AS product_name FROM return_items i LEFT JOIN products p ON p.id = i.product_id"
+                                " WHERE i.return_id = ? ORDER BY i.sort_order, i.id", (return_id,))
+    return row
+
+
+def save_return(db: Database, data: dict, raw_items: list[dict], user=None) -> int:
+    """Customer return (items come back, credit reduces the invoice balance) or vendor return (items go back)."""
+    kind = data.get("kind")
+    if kind not in ("customer", "vendor"):
+        raise ValidationError("Return kind must be customer or vendor.")
+    date = parse_date(data.get("date"))
+    if not date:
+        raise ValidationError("Date is required (YYYY-MM-DD).")
+    number = _clean(data.get("number")) or next_return_number(db)
+    if db.scalar("SELECT COUNT(*) FROM returns WHERE number = ?", (number,), 0):
+        raise ValidationError(f"Return number '{number}' already exists.")
+    invoice_id = data.get("invoice_id") or None
+    purchase_id = data.get("purchase_id") or None
+    customer_id = data.get("customer_id") or None
+    vendor_id = data.get("vendor_id") or None
+    if invoice_id:
+        inv = db.query_one("SELECT customer_id, total FROM documents WHERE id = ? AND doc_type = 'invoice'", (invoice_id,))
+        if not inv:
+            raise ValidationError("Invoice not found.")
+        customer_id = customer_id or inv["customer_id"]
+    if purchase_id:
+        pu = db.query_one("SELECT vendor_id FROM purchases WHERE id = ?", (purchase_id,))
+        if not pu:
+            raise ValidationError("Purchase not found.")
+        vendor_id = vendor_id or pu["vendor_id"]
+    restock = 1 if data.get("restock", 1) in (1, True, "1", "True", "true") else 0
+    items = []
+    for idx, raw in enumerate(raw_items or [], start=1):
+        desc = _clean(raw.get("description"))
+        qty = parse_float(raw.get("quantity"), None)
+        price = parse_float(raw.get("unit_price"), None)
+        product_id = raw.get("product_id") or None
+        if not desc and not product_id and qty in (None, 0):
+            continue
+        if qty is None or qty <= 0:
+            raise ValidationError(f"Line {idx}: quantity must be greater than zero.")
+        if price is None or price < 0:
+            raise ValidationError(f"Line {idx}: unit price must be a number of 0 or more.")
+        if kind == "vendor" and not product_id:
+            raise ValidationError(f"Line {idx}: choose the product being returned to the vendor.")
+        prod = get_product(db, product_id) if product_id else None
+        if kind == "vendor" and prod and prod.get("track_stock") and db.get_setting("allow_negative_stock", "0") != "1":
+            if qty > prod["stock"] + 0.0001:
+                raise StockError(f"{prod['name']}: only {prod['stock']:g} in stock, cannot return {qty:g} to the vendor.")
+        items.append({"product_id": product_id, "description": desc or (prod["name"] if prod else ""),
+                      "quantity": qty, "unit_price": round2(price), "line_total": round2(qty * price), "sort_order": idx})
+    if not items:
+        raise ValidationError("Add at least one returned line.")
+    total = round2(sum(i["line_total"] for i in items))
+    if kind == "customer" and invoice_id:
+        inv_total = float(inv["total"] or 0)
+        existing = invoice_credit_amount(db, invoice_id)
+        if total + existing > inv_total + 0.005 and not data.get("allow_over_credit"):
+            raise ValidationError(f"Credit of {total:,.2f} plus earlier returns exceeds the invoice total {inv_total:,.2f}.")
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO returns(kind, number, invoice_id, purchase_id, customer_id, vendor_id, date, reason, restock,"
+            " total, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (kind, number, invoice_id, purchase_id, customer_id, vendor_id, date.isoformat(), _clean(data.get("reason")),
+             restock, total, _user_name(user), now_stamp()))
+        rid = cur.lastrowid
+        for i in items:
+            conn.execute("INSERT INTO return_items(return_id, product_id, description, quantity, unit_price, line_total,"
+                         " sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (rid, i["product_id"], i["description"], i["quantity"], i["unit_price"], i["line_total"], i["sort_order"]))
+            if i["product_id"]:
+                prod = get_product(db, i["product_id"])
+                if prod and prod.get("track_stock"):
+                    if kind == "customer" and restock:
+                        _insert_movement(conn, i["product_id"], i["quantity"], MOVE_CUSTOMER_RETURN, "return", rid,
+                                         prod.get("cost_price") or 0, date.isoformat(), f"Return {number}")
+                    elif kind == "vendor":
+                        _insert_movement(conn, i["product_id"], -i["quantity"], MOVE_VENDOR_RETURN, "return", rid,
+                                         i["unit_price"], date.isoformat(), f"Return {number}")
+    _bump(db, "return_prefix", "return_next_number", number)
+    db.log("return", f"{'Customer' if kind == 'customer' else 'Vendor'} return {number} ({total:,.2f})", "return", rid)
+    return int(rid)
+
+
+def delete_return(db: Database, return_id: int) -> None:
+    row = db.query_one("SELECT number FROM returns WHERE id = ?", (return_id,))
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM stock_movements WHERE ref_type = 'return' AND ref_id = ?", (return_id,))
+        conn.execute("DELETE FROM returns WHERE id = ?", (return_id,))
+    if row:
+        db.log("return", f"Deleted return {row['number']}", "return", return_id)
+
+
+# =========================================================================== reports / dashboard
+def best_sellers(db: Database, limit: int = 8, date_from=None, date_to=None) -> list[dict]:
+    sql = """
+        SELECT COALESCE(p.name, i.description) AS name, i.product_id,
+               SUM(i.quantity) AS qty_sold, SUM(i.line_total) AS revenue,
+               SUM(i.quantity * i.cost_price) AS cost, COUNT(DISTINCT d.id) AS invoices
+        FROM document_items i
+        JOIN documents d ON d.id = i.document_id AND d.doc_type = 'invoice'
+        LEFT JOIN products p ON p.id = i.product_id
+        WHERE 1 = 1
+    """
+    params: list = []
+    df, dtn = parse_date(date_from), parse_date(date_to)
+    if df:
+        sql += " AND d.date >= ?"
+        params.append(df.isoformat())
+    if dtn:
+        sql += " AND d.date <= ?"
+        params.append(dtn.isoformat())
+    sql += " GROUP BY COALESCE(i.product_id, i.description) ORDER BY qty_sold DESC, revenue DESC LIMIT ?"
+    params.append(limit)
+    rows = db.query(sql, params)
+    for r in rows:
+        r["qty_sold"] = round2(r["qty_sold"])
+        r["revenue"] = round2(r["revenue"])
+        r["cost"] = round2(r["cost"])
+        r["profit"] = round2(r["revenue"] - r["cost"])
+    return rows
+
+
+def profit_summary(db: Database, date_from=None, date_to=None) -> dict:
+    """Gross profit on invoiced lines (sale price - snapshot cost), before document discounts."""
+    sql = ("SELECT SUM(i.line_total) AS revenue, SUM(i.quantity * i.cost_price) AS cost FROM document_items i"
+           " JOIN documents d ON d.id = i.document_id AND d.doc_type = 'invoice' WHERE 1 = 1")
+    params: list = []
+    df, dtn = parse_date(date_from), parse_date(date_to)
+    if df:
+        sql += " AND d.date >= ?"
+        params.append(df.isoformat())
+    if dtn:
+        sql += " AND d.date <= ?"
+        params.append(dtn.isoformat())
+    row = db.query_one(sql, params) or {}
+    revenue = round2(row.get("revenue") or 0)
+    cost = round2(row.get("cost") or 0)
+    return {"revenue": revenue, "cost": cost, "profit": round2(revenue - cost)}
+
+
 def dashboard_stats(db: Database) -> dict:
     invoices = list_documents(db, INVOICE)
     today = dt.date.today()
@@ -609,6 +1196,9 @@ def dashboard_stats(db: Database) -> dict:
     paid_month = round2(db.scalar("SELECT SUM(amount) FROM payments WHERE date >= ?", (month_start,), 0) or 0)
     invoiced_month = round2(sum(float(r["total"] or 0) for r in invoices if (r["date"] or "") >= month_start))
     open_quotes = [r for r in list_documents(db, QUOTATION) if r["status"] == STATUS_OPEN]
+    purchases_month = round2(db.scalar("SELECT SUM(total) FROM purchases WHERE date >= ?", (month_start,), 0) or 0)
+    returns_month = round2(db.scalar("SELECT SUM(total) FROM returns WHERE kind = 'customer' AND date >= ?", (month_start,), 0) or 0)
+    low = low_stock_products(db)
     return {
         "outstanding": outstanding,
         "paid_this_month": paid_month,
@@ -618,8 +1208,17 @@ def dashboard_stats(db: Database) -> dict:
         "invoice_count": len(invoices),
         "open_quotations": len(open_quotes),
         "customer_count": db.scalar("SELECT COUNT(*) FROM customers", (), 0),
+        "product_count": db.scalar("SELECT COUNT(*) FROM products WHERE active = 1", (), 0),
         "recent_invoices": invoices[:6],
         "overdue_invoices": sorted(overdue, key=lambda r: r.get("due_date") or "")[:6],
+        "stock_value": stock_value(db),
+        "low_stock": low,
+        "low_stock_count": len(low),
+        "purchases_this_month": purchases_month,
+        "returns_this_month": returns_month,
+        "profit_month": profit_summary(db, month_start),
+        "profit_all": profit_summary(db),
+        "best_sellers": best_sellers(db, 6),
     }
 
 

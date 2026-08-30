@@ -1,4 +1,4 @@
-"""InvoiceApp entry point: window, sidebar navigation, theme application, global error handling."""
+"""InvoiceApp entry point: window, login, sidebar navigation, theme application, global error handling."""
 from __future__ import annotations
 
 import json
@@ -14,17 +14,19 @@ from db import DEFAULT_SETTINGS, Database
 from theme import apply_theme, build_palette
 from utils import data_dir, now_stamp
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 
+# (key, icon, label, owner_only)
 NAV_ITEMS = [
-    ("dashboard", "⌂", "Dashboard"),
-    ("invoices", "▤", "Invoices"),
-    ("quotations", "✎", "Quotations"),
-    ("customers", "☺", "Customers"),
-    ("vendors", "⚒", "Vendors"),
-    ("products", "▦", "Products & Services"),
-    ("payments", "¤", "Payments"),
-    ("settings", "⚙", "Settings"),
+    ("dashboard", "⌂", "Dashboard", False),
+    ("invoices", "▤", "Invoices", False),
+    ("quotations", "✎", "Quotations", False),
+    ("customers", "☺", "Customers", False),
+    ("products", "▦", "Products & Services", False),
+    ("inventory", "▥", "Inventory", False),
+    ("vendors", "⚒", "Vendors", True),
+    ("payments", "¤", "Payments", True),
+    ("settings", "⚙", "Settings", True),
 ]
 
 
@@ -53,19 +55,21 @@ class Sidebar(tk.Frame):
         name = app.settings.get("company_name") or "InvoiceApp"
         tk.Label(brand, text=name, font=p.fonts["heading"], bg=p.sidebar_bg, fg=p.on(p.sidebar_bg), anchor="w",
                  wraplength=190, justify="left").pack(fill="x")
-        tk.Label(brand, text="Invoices - Quotations - Payments", font=p.fonts["small"], bg=p.sidebar_bg,
+        tk.Label(brand, text="Invoices - Quotations - Stock", font=p.fonts["small"], bg=p.sidebar_bg,
                  fg=p.sidebar_fg, anchor="w").pack(fill="x", pady=(2, 0))
         tk.Frame(self, bg=p.sidebar_hover, height=1).pack(fill="x", padx=16, pady=(0, 10))
 
-        for key, icon, label in NAV_ITEMS:
+        for key, icon, label, owner_only in NAV_ITEMS:
+            if owner_only and not app.is_owner:
+                continue
             row = tk.Frame(self, bg=p.sidebar_bg, cursor="hand2")
             row.pack(fill="x", padx=10, pady=2)
             bar = tk.Frame(row, bg=p.sidebar_bg, width=3)
             bar.pack(side="left", fill="y")
             ic = tk.Label(row, text=icon, font=(p.font, p.font_size + 2), bg=p.sidebar_bg, fg=p.sidebar_fg, width=3)
-            ic.pack(side="left", padx=(6, 4), pady=8)
+            ic.pack(side="left", padx=(6, 4), pady=7)
             lb = tk.Label(row, text=label, font=p.fonts["base"], bg=p.sidebar_bg, fg=p.sidebar_fg, anchor="w")
-            lb.pack(side="left", fill="x", expand=True, pady=8)
+            lb.pack(side="left", fill="x", expand=True, pady=7)
             for w in (row, bar, ic, lb):
                 w.bind("<Button-1>", lambda e, k=key: app.navigate(k))
                 w.bind("<Enter>", lambda e, k=key: self._hover(k, True))
@@ -74,10 +78,17 @@ class Sidebar(tk.Frame):
 
         foot = tk.Frame(self, bg=p.sidebar_bg)
         foot.pack(side="bottom", fill="x", padx=20, pady=16)
-        tk.Label(foot, text=f"InvoiceApp v{APP_VERSION}", font=p.fonts["small"], bg=p.sidebar_bg, fg=p.sidebar_fg,
-                 anchor="w").pack(fill="x")
-        tk.Label(foot, text="Local database - no internet needed", font=p.fonts["small"], bg=p.sidebar_bg,
-                 fg=p.sidebar_fg, anchor="w").pack(fill="x")
+        user = app.user or {}
+        who = user.get("full_name") or user.get("username") or "Guest"
+        tk.Label(foot, text=who, font=p.fonts["bold"], bg=p.sidebar_bg, fg=p.on(p.sidebar_bg), anchor="w").pack(fill="x")
+        tk.Label(foot, text=("Owner" if app.is_owner else "Employee") + f"  -  v{APP_VERSION}", font=p.fonts["small"],
+                 bg=p.sidebar_bg, fg=p.sidebar_fg, anchor="w").pack(fill="x")
+        links = tk.Frame(foot, bg=p.sidebar_bg)
+        links.pack(fill="x", pady=(6, 0))
+        for text, cmd in (("Sign out", app.sign_out), ("Password", app.change_password)):
+            l = tk.Label(links, text=text, font=p.fonts["small"], bg=p.sidebar_bg, fg=p.accent, cursor="hand2")
+            l.pack(side="left", padx=(0, 12))
+            l.bind("<Button-1>", lambda e, c=cmd: c())
 
     def _paint(self, key, bg, fg, bar_color):
         row, ic, lb, bar = self.items[key]
@@ -103,7 +114,7 @@ class Sidebar(tk.Frame):
 
 
 class App(tb.Window):
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: str | None = None, auto_user: dict | None = None):
         self.db = Database(db_path)
         self.settings = self.db.get_settings()
         self.palette = build_palette(self.settings)
@@ -114,19 +125,77 @@ class App(tb.Window):
         self.report_callback_exception = self._tk_error
         self.current = "dashboard"
         self.pages: dict[str, tk.Frame] = {}
-        self._build()
-        self.navigate("dashboard")
+        self.sidebar = None
+        self.container = None
+        self.user: dict | None = None
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         try:
             self.place_window_center()
         except Exception:
             pass
+        self.update_idletasks()
+        if auto_user is not None:
+            self.user = auto_user
+        elif not self.authenticate():
+            self.on_close()
+            return
+        self._build()
+        self.navigate("dashboard")
+
+    # ------------------------------------------------------------------ auth
+    @property
+    def is_owner(self) -> bool:
+        return bool(self.user) and self.user.get("role") == models.ROLE_OWNER
+
+    def authenticate(self) -> bool:
+        """First run: create the owner. Otherwise sign in (unless login is switched off)."""
+        from ui_auth import LoginDialog, SetupOwnerDialog
+        if models.count_users(self.db) == 0:
+            self.user = SetupOwnerDialog(self, self).show()
+            return self.user is not None
+        if self.settings.get("require_login", "1") != "1":
+            owner = self.db.query_one("SELECT id, username, full_name, role, active FROM users WHERE role = 'owner'"
+                                      " AND active = 1 ORDER BY id LIMIT 1")
+            if owner:
+                self.user = owner
+                return True
+        self.user = LoginDialog(self, self).show()
+        return self.user is not None
+
+    def sign_out(self):
+        from ui_common import ask_yes_no
+        if not ask_yes_no(self, "Sign out and return to the login screen?", "Sign out"):
+            return
+        for w in (self.sidebar, self.container):
+            if w is not None:
+                w.destroy()
+        self.pages = {}
+        self.user = None
+        from ui_auth import LoginDialog
+        self.user = LoginDialog(self, self).show()
+        if self.user is None:
+            self.on_close()
+            return
+        self.current = "dashboard"
+        self._build()
+        self.navigate("dashboard")
+
+    def change_password(self):
+        from ui_auth import ChangePasswordDialog
+        ChangePasswordDialog(self, self).show()
+
+    def allowed(self, page: str) -> bool:
+        for key, _, _, owner_only in NAV_ITEMS:
+            if key == page:
+                return self.is_owner or not owner_only
+        return False
 
     # ------------------------------------------------------------------ layout
     def _build(self):
         from ui_customers import CustomersPage
         from ui_dashboard import DashboardPage
         from ui_documents import DocumentsPage
+        from ui_inventory import InventoryPage
         from ui_payments import PaymentsPage
         from ui_products import ProductsPage
         from ui_settings import SettingsPage
@@ -141,14 +210,18 @@ class App(tb.Window):
             "invoices": DocumentsPage(self.container, self, models.INVOICE),
             "quotations": DocumentsPage(self.container, self, models.QUOTATION),
             "customers": CustomersPage(self.container, self),
-            "vendors": VendorsPage(self.container, self),
             "products": ProductsPage(self.container, self),
-            "payments": PaymentsPage(self.container, self),
-            "settings": SettingsPage(self.container, self),
+            "inventory": InventoryPage(self.container, self),
         }
+        if self.is_owner:
+            self.pages.update({
+                "vendors": VendorsPage(self.container, self),
+                "payments": PaymentsPage(self.container, self),
+                "settings": SettingsPage(self.container, self),
+            })
 
     def navigate(self, name: str, **kwargs):
-        if name not in self.pages:
+        if name not in self.pages or not self.allowed(name):
             name = "dashboard"
         for key, page in self.pages.items():
             if key == name:
@@ -182,7 +255,8 @@ class App(tb.Window):
         self.configure(bg=self.palette.bg)
         current = self.current
         for w in (self.sidebar, self.container):
-            w.destroy()
+            if w is not None:
+                w.destroy()
         self._build()
         self.navigate(current)
 
@@ -200,7 +274,10 @@ class App(tb.Window):
         try:
             self.db.close()
         finally:
-            self.destroy()
+            try:
+                self.destroy()
+            except Exception:
+                pass
 
 
 def main():
@@ -216,6 +293,8 @@ def main():
         except Exception:
             print(text, file=sys.stderr)
         sys.exit(1)
+    if app.user is None:
+        return
     app.mainloop()
 
 
