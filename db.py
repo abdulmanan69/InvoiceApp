@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import threading
+import uuid as _uuid
 
 from utils import default_db_path, now_stamp
 
@@ -190,7 +191,25 @@ CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(date);
 CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id);
 CREATE INDEX IF NOT EXISTS idx_movements_ref ON stock_movements(ref_type, ref_id);
 CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id);
+
+CREATE TABLE IF NOT EXISTS sync_outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    row_uuid   TEXT NOT NULL,
+    op         TEXT NOT NULL,
+    payload    TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
+
+# Tables that sync to the cloud. Each gets uuid / shop_id / deleted / row_updated_at columns.
+SYNC_TABLES = ["customers", "vendors", "products", "documents", "document_items", "payments",
+               "purchases", "purchase_items", "returns", "return_items", "stock_movements"]
 
 # Columns added after v1.0 (table, column, declaration). Applied idempotently on every start.
 MIGRATIONS = [
@@ -208,6 +227,13 @@ MIGRATIONS = [
     ("document_items", "cost_price", "REAL NOT NULL DEFAULT 0"),
     ("payments", "created_by", "TEXT DEFAULT ''"),
 ]
+
+# Cloud-sync columns added to every synced table (idempotent).
+for _t in SYNC_TABLES:
+    MIGRATIONS.append((_t, "uuid", "TEXT"))
+    MIGRATIONS.append((_t, "shop_id", "TEXT"))
+    MIGRATIONS.append((_t, "deleted", "INTEGER NOT NULL DEFAULT 0"))
+    MIGRATIONS.append((_t, "row_updated_at", "TEXT DEFAULT ''"))
 
 # Per-document PDF display switches. These are the defaults; Settings can change them and
 # every document stores its own copy (display_options JSON) so old PDFs keep their look.
@@ -332,6 +358,14 @@ DEFAULT_SETTINGS = {
     # behaviour
     "enable_quotations": "1",
     "overdue_grace_days": "0",
+    # cloud sync (Supabase). URL + anon key + shop are shared per shop and safe to store here.
+    # The service_role key and the signed-in session are per-machine secrets kept in a local file, NOT here.
+    "cloud_enabled": "0",
+    "cloud_url": "",
+    "cloud_anon_key": "",
+    "cloud_shop_id": "",
+    "cloud_shop_name": "",
+    "cloud_auto_sync": "1",
 }
 
 
@@ -371,7 +405,64 @@ class Database:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             for key, value in DEFAULT_SETTINGS.items():
                 self.conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value))
+            self._create_sync_triggers()
+            self._backfill_sync_columns()
             self.conn.commit()
+
+    def _create_sync_triggers(self):
+        """Every new row in a synced table automatically gets a UUID + timestamp (no model changes needed)."""
+        for t in SYNC_TABLES:
+            self.conn.execute(
+                f"CREATE TRIGGER IF NOT EXISTS trg_{t}_newuuid AFTER INSERT ON {t} "
+                f"WHEN NEW.uuid IS NULL OR NEW.uuid = '' BEGIN "
+                f"UPDATE {t} SET uuid = lower(hex(randomblob(16))), "
+                f"row_updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE rowid = NEW.rowid; END;")
+
+    def _backfill_sync_columns(self):
+        """Give every existing row a UUID and a row_updated_at so it is ready to sync later."""
+        now = now_stamp()
+        for t in SYNC_TABLES:
+            for (rid,) in self.conn.execute(f"SELECT rowid FROM {t} WHERE uuid IS NULL OR uuid = ''").fetchall():
+                self.conn.execute(f"UPDATE {t} SET uuid = ? WHERE rowid = ?", (_uuid.uuid4().hex, rid))
+            self.conn.execute(f"UPDATE {t} SET row_updated_at = ? WHERE row_updated_at IS NULL OR row_updated_at = ''",
+                              (now,))
+
+    # ---------------------------------------------------------------- sync helpers
+    def get_sync_state(self, key: str, default=None):
+        return self.scalar("SELECT value FROM sync_state WHERE key = ?", (key,), default)
+
+    def set_sync_state(self, key: str, value) -> None:
+        self.execute("INSERT INTO sync_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (key, "" if value is None else str(value)))
+
+    def _secrets_path(self) -> str:
+        import os as _os
+        from utils import data_dir
+        return _os.path.join(data_dir(), "cloud_secrets.json")
+
+    def get_secret(self, key: str, default=None):
+        """Per-machine secrets (service_role key, saved session). Never stored in the shared DB."""
+        try:
+            with open(self._secrets_path(), "r", encoding="utf-8") as fh:
+                return json.load(fh).get(key, default)
+        except Exception:
+            return default
+
+    def set_secret(self, key: str, value) -> None:
+        path = self._secrets_path()
+        try:
+            data = {}
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- queries
     def execute(self, sql: str, params=()) -> sqlite3.Cursor:

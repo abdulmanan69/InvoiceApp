@@ -10,7 +10,7 @@ import json
 import re
 import secrets
 
-from db import DISPLAY_DEFAULTS, Database
+from db import DISPLAY_DEFAULTS, SYNC_TABLES, Database
 from utils import add_days, now_stamp, parse_date, parse_float, parse_int, round2, today_iso
 
 INVOICE = "invoice"
@@ -1290,6 +1290,117 @@ def export_csv(path: str, headers: list[str], rows: list[list]) -> None:
         w.writerow(headers)
         for r in rows:
             w.writerow(["" if v is None else v for v in r])
+
+
+# =========================================================================== cloud sync (Supabase)
+def cloud_client(db: Database):
+    from cloud import Supabase
+    return Supabase(db.get_setting("cloud_url", ""), db.get_setting("cloud_anon_key", ""))
+
+
+def cloud_session(db: Database) -> dict:
+    return db.get_secret("session") or {}
+
+
+def cloud_token(db: Database) -> str:
+    return (cloud_session(db) or {}).get("access_token", "")
+
+
+def cloud_user(db: Database) -> dict:
+    return (cloud_session(db) or {}).get("user", {}) or {}
+
+
+def cloud_signed_in_email(db: Database) -> str:
+    return cloud_user(db).get("email", "")
+
+
+def cloud_configured(db: Database) -> bool:
+    return bool(_clean(db.get_setting("cloud_url", "")) and _clean(db.get_setting("cloud_anon_key", "")))
+
+
+def cloud_sign_in(db: Database, email: str, password: str) -> dict:
+    data = cloud_client(db).sign_in(_clean(email), password)
+    db.set_secret("session", {"access_token": data.get("access_token"),
+                              "refresh_token": data.get("refresh_token"), "user": data.get("user", {})})
+    db.log("cloud", f"Signed in to cloud as {_clean(email)}", "cloud", None)
+    return data.get("user", {})
+
+
+def cloud_sign_out(db: Database) -> None:
+    db.set_secret("session", None)
+
+
+def _stamp_shop_id(db: Database, shop_id: str) -> None:
+    for t in SYNC_TABLES:
+        db.execute(f"UPDATE {t} SET shop_id = ? WHERE shop_id IS NULL OR shop_id = ''", (shop_id,))
+
+
+def cloud_create_shop(db: Database, name: str) -> dict:
+    name = _clean(name)
+    if not name:
+        raise ValidationError("Enter a shop name.")
+    tok = cloud_token(db)
+    if not tok:
+        raise ValidationError("Sign in to the cloud first.")
+    sb = cloud_client(db)
+    uid = cloud_user(db).get("id")
+    rows = sb.insert("shops", tok, [{"name": name, "created_by": uid}])
+    shop = rows[0]
+    sb.insert("members", tok, [{"user_id": uid, "shop_id": shop["id"], "role": "owner"}])
+    db.set_setting("cloud_shop_id", shop["id"])
+    db.set_setting("cloud_shop_name", shop["name"])
+    _stamp_shop_id(db, shop["id"])
+    db.log("cloud", f"Created cloud shop '{name}'", "cloud", None)
+    return shop
+
+
+def cloud_list_shops(db: Database) -> list[dict]:
+    tok = cloud_token(db)
+    if not tok:
+        return []
+    return cloud_client(db).select("shops", tok, {"select": "id,name,created_at", "order": "created_at.asc"})
+
+
+def cloud_link_shop(db: Database, shop_id: str, shop_name: str = "") -> None:
+    db.set_setting("cloud_shop_id", shop_id)
+    if shop_name:
+        db.set_setting("cloud_shop_name", shop_name)
+    _stamp_shop_id(db, shop_id)
+    db.log("cloud", f"Linked to cloud shop '{shop_name or shop_id}'", "cloud", None)
+
+
+def cloud_add_employee(db: Database, email: str, password: str, role: str = ROLE_EMPLOYEE, full_name: str = "") -> dict:
+    email = _clean(email)
+    if not email or "@" not in email:
+        raise ValidationError("Enter a valid email.")
+    if len(password or "") < 6:
+        raise ValidationError("Password must be at least 6 characters.")
+    service = db.get_secret("service_key")
+    if not service:
+        raise ValidationError("Paste the service_role key in the Team box first (owner only).")
+    shop_id = db.get_setting("cloud_shop_id", "")
+    if not shop_id:
+        raise ValidationError("Create or select a shop first.")
+    tok = cloud_token(db)
+    sb = cloud_client(db)
+    user = sb.admin_create_user(service, email, password, {"full_name": _clean(full_name), "role": role})
+    try:
+        sb.insert("members", tok, [{"user_id": user["id"], "shop_id": shop_id, "role": role}])
+    except Exception:
+        sb.upsert("members", tok, [{"user_id": user["id"], "shop_id": shop_id, "role": role}],
+                  on_conflict="user_id,shop_id")
+    db.log("cloud", f"Added cloud {role} {email}", "cloud", None)
+    return user
+
+
+def cloud_list_members(db: Database) -> list[dict]:
+    tok = cloud_token(db)
+    shop_id = db.get_setting("cloud_shop_id", "")
+    if not tok or not shop_id:
+        return []
+    return cloud_client(db).select("members", tok,
+                                   {"select": "user_id,role,created_at", "shop_id": f"eq.{shop_id}",
+                                    "order": "created_at.asc"})
 
 
 # =========================================================================== bulk product import

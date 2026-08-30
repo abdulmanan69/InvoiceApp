@@ -15,6 +15,7 @@ from db import DEFAULT_SETTINGS, DISPLAY_DEFAULTS, DISPLAY_LABELS
 from pdf_templates import TEMPLATE_DESCRIPTIONS, TEMPLATE_NAMES
 from ui_common import (Card, DataTable, PageHeader, StatusBadge, ask_open_path, ask_save_path, ask_yes_no, button,
                        show_error, show_info)
+import cloud
 from utils import data_dir, is_hex_color, open_file, parse_float
 
 THEME_KEYS = ("theme_accent", "theme_bg", "theme_fg", "theme_success", "theme_warning", "theme_danger", "theme_muted",
@@ -46,6 +47,7 @@ class SettingsPage(tk.Frame):
         self.tab_payments()
         self.tab_inventory()
         self.tab_users()
+        self.tab_cloud()
         self.tab_dashboard()
         self.tab_appearance()
         self.tab_data()
@@ -383,6 +385,215 @@ class SettingsPage(tk.Frame):
         tk.Label(card, text="A backup is a complete copy of the .db file (customers, invoices, stock, users...). Restoring "
                             "replaces ALL current data (a safety copy *.before-restore is kept next to the database).",
                  font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=700, justify="left").pack(anchor="w", pady=(10, 0))
+
+    def tab_cloud(self):
+        card = self._tab("Cloud sync")
+        p = self.app.palette
+        card.grid_columnconfigure(1, weight=1)
+        self._section(card, "Cloud sync (Supabase) - share data across shops, still works offline")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Turn this on to sync invoices, quotations, customers, products and stock across the "
+                            "owner's and employees' PCs. When there is no internet the app keeps working and syncs "
+                            "later. First run SUPABASE_SETUP.sql in your Supabase project (SQL editor).",
+                 font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=780, justify="left").grid(
+            row=r, column=0, columnspan=6, sticky="w", pady=(0, 6))
+        self._toggle(card, "Enable cloud sync", "cloud_enabled", "off = pure offline (default)")
+        self._row(card, "Project URL", "cloud_url", hint="Supabase -> Project Settings -> Data API -> URL")
+        self._row(card, "Anon public key", "cloud_anon_key", hint="Project Settings -> API Keys -> anon public")
+        r = card.grid_size()[1]
+        row = tk.Frame(card, bg=p.card)
+        row.grid(row=r, column=1, sticky="w", pady=(2, 4))
+        button(row, "Test connection", self.cloud_test, "outline").pack(side="left")
+        self.cloud_status = tk.Label(row, text="", font=p.fonts["small"], bg=p.card, fg=p.muted)
+        self.cloud_status.pack(side="left", padx=(10, 0))
+
+        self._section(card, "Sign in")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Signed in as", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_who = tk.Label(card, text="", font=p.fonts["bold"], bg=p.card, fg=p.fg, anchor="w")
+        self.cloud_who.grid(row=r, column=1, sticky="w")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Email", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_email = tk.StringVar()
+        tb.Entry(card, textvariable=self.cloud_email, width=32).grid(row=r, column=1, sticky="w", pady=4)
+        r = card.grid_size()[1]
+        tk.Label(card, text="Password", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_pw = tk.StringVar()
+        tb.Entry(card, textvariable=self.cloud_pw, width=32, show="*").grid(row=r, column=1, sticky="w", pady=4)
+        r = card.grid_size()[1]
+        row = tk.Frame(card, bg=p.card)
+        row.grid(row=r, column=1, sticky="w", pady=(2, 4))
+        button(row, "Sign in", self.cloud_signin, "primary").pack(side="left")
+        button(row, "Sign out", self.cloud_signout, "secondary-outline").pack(side="left", padx=(8, 0))
+
+        self._section(card, "Shop")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Current shop", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_shop_lbl = tk.Label(card, text="", font=p.fonts["bold"], bg=p.card, fg=p.fg, anchor="w")
+        self.cloud_shop_lbl.grid(row=r, column=1, sticky="w")
+        r = card.grid_size()[1]
+        row = tk.Frame(card, bg=p.card)
+        row.grid(row=r, column=1, sticky="w", pady=(2, 4))
+        self.cloud_shop_name = tk.StringVar()
+        tb.Entry(row, textvariable=self.cloud_shop_name, width=24).pack(side="left")
+        button(row, "Create shop", self.cloud_create_shop, "outline").pack(side="left", padx=(8, 0))
+        button(row, "Select existing", self.cloud_select_shop, "secondary-outline").pack(side="left", padx=(8, 0))
+
+        self._section(card, "Team (owner only) - add employees who can sign in on their own PC")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Service key", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_service = tk.StringVar(value="" if not self.app.db.get_secret("service_key") else "********")
+        tb.Entry(card, textvariable=self.cloud_service, width=40, show="*").grid(row=r, column=1, sticky="w", pady=4)
+        button(card, "Save key", self.cloud_save_service, "secondary-outline").grid(row=r, column=2, sticky="w", padx=(8, 0))
+        tk.Label(card, text="Supabase -> Project Settings -> API Keys -> service_role. Stored only on this (owner) PC.",
+                 font=p.fonts["small"], bg=p.card, fg=p.muted).grid(row=r + 1, column=1, columnspan=4, sticky="w")
+        r = card.grid_size()[1]
+        row = tk.Frame(card, bg=p.card)
+        row.grid(row=r, column=1, columnspan=4, sticky="w", pady=(6, 0))
+        self.emp_email = tk.StringVar()
+        self.emp_pw = tk.StringVar()
+        self.emp_role = tb.Combobox(row, values=["employee", "owner"], state="readonly", width=10)
+        self.emp_role.set("employee")
+        tk.Label(row, text="Email", font=p.fonts["small"], bg=p.card, fg=p.muted).pack(side="left")
+        tb.Entry(row, textvariable=self.emp_email, width=22).pack(side="left", padx=(4, 8))
+        tk.Label(row, text="Password", font=p.fonts["small"], bg=p.card, fg=p.muted).pack(side="left")
+        tb.Entry(row, textvariable=self.emp_pw, width=16, show="*").pack(side="left", padx=(4, 8))
+        self.emp_role.pack(side="left", padx=(0, 8))
+        button(row, "Add employee", self.cloud_add_employee, "primary").pack(side="left")
+        r = card.grid_size()[1]
+        self.cloud_members = tk.Text(card, height=5, width=70, font=p.fonts["small"], wrap="none")
+        self.cloud_members.grid(row=r, column=1, columnspan=4, sticky="w", pady=(8, 0))
+        button(card, "Refresh team", self.cloud_refresh_members, "link").grid(row=r + 1, column=1, sticky="w")
+        self._cloud_refresh_labels()
+
+    # ------------------------------------------------------------------ cloud actions
+    def _persist_cloud_conf(self):
+        self.app.db.set_settings({"cloud_url": self.vars["cloud_url"].get().strip(),
+                                  "cloud_anon_key": self.vars["cloud_anon_key"].get().strip(),
+                                  "cloud_enabled": self.vars["cloud_enabled"].get()})
+        self.app.reload_settings()
+
+    def _cloud_refresh_labels(self):
+        db = self.app.db
+        email = models.cloud_signed_in_email(db)
+        self.cloud_who.configure(text=email or "(not signed in)")
+        if email and not self.cloud_email.get():
+            self.cloud_email.set(email)
+        self.cloud_shop_lbl.configure(text=self.app.settings.get("cloud_shop_name") or "(none selected)")
+
+    def _cloud_busy(self, msg):
+        self.cloud_status.configure(text=msg, fg=self.app.palette.muted)
+        self.cloud_status.update_idletasks()
+
+    def cloud_test(self):
+        self._persist_cloud_conf()
+        self._cloud_busy("Testing...")
+        try:
+            models.cloud_client(self.app.db).test_connection()
+        except Exception as e:
+            self.cloud_status.configure(text="Failed: " + str(e), fg=self.app.palette.danger)
+            return
+        self.cloud_status.configure(text="Connected OK", fg=self.app.palette.success)
+
+    def cloud_signin(self):
+        self._persist_cloud_conf()
+        self._cloud_busy("Signing in...")
+        try:
+            models.cloud_sign_in(self.app.db, self.cloud_email.get(), self.cloud_pw.get())
+        except Exception as e:
+            self.cloud_status.configure(text="Sign in failed: " + str(e), fg=self.app.palette.danger)
+            return
+        self.cloud_pw.set("")
+        self.cloud_status.configure(text="Signed in", fg=self.app.palette.success)
+        self._cloud_refresh_labels()
+
+    def cloud_signout(self):
+        models.cloud_sign_out(self.app.db)
+        self.cloud_status.configure(text="Signed out", fg=self.app.palette.muted)
+        self._cloud_refresh_labels()
+
+    def cloud_create_shop(self):
+        self._cloud_busy("Creating shop...")
+        try:
+            shop = models.cloud_create_shop(self.app.db, self.cloud_shop_name.get())
+        except Exception as e:
+            self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        self.app.reload_settings()
+        self.cloud_status.configure(text=f"Shop '{shop['name']}' created & linked", fg=self.app.palette.success)
+        self._cloud_refresh_labels()
+
+    def cloud_select_shop(self):
+        self._cloud_busy("Loading shops...")
+        try:
+            shops = models.cloud_list_shops(self.app.db)
+        except Exception as e:
+            self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        if not shops:
+            self.cloud_status.configure(text="No shops yet - create one.", fg=self.app.palette.muted)
+            return
+        from ui_common import Dialog
+
+        class Picker(Dialog):
+            def __init__(s, parent, app, shops):
+                super().__init__(parent, app, "Select a shop", width=460)
+                s.choice = None
+                pp = app.palette
+                for sh in shops:
+                    button(s.body, sh["name"], (lambda x=sh: s._pick(x)), "secondary-outline").pack(fill="x", pady=3)
+                s.buttons(None, None, cancel_text="Cancel")
+
+            def _pick(s, sh):
+                s.result = sh
+                s.close()
+        chosen = Picker(self, self.app, shops).show()
+        if chosen:
+            models.cloud_link_shop(self.app.db, chosen["id"], chosen["name"])
+            self.app.reload_settings()
+            self.cloud_status.configure(text=f"Linked to '{chosen['name']}'", fg=self.app.palette.success)
+            self._cloud_refresh_labels()
+
+    def cloud_save_service(self):
+        v = self.cloud_service.get().strip()
+        if v and v != "********":
+            self.app.db.set_secret("service_key", v)
+            self.cloud_service.set("********")
+            self.cloud_status.configure(text="Service key saved (this PC only)", fg=self.app.palette.success)
+        elif not v:
+            self.app.db.set_secret("service_key", None)
+            self.cloud_status.configure(text="Service key removed", fg=self.app.palette.muted)
+
+    def cloud_add_employee(self):
+        self._cloud_busy("Creating employee...")
+        try:
+            models.cloud_add_employee(self.app.db, self.emp_email.get(), self.emp_pw.get(), self.emp_role.get())
+        except Exception as e:
+            self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        self.cloud_status.configure(text=f"Employee {self.emp_email.get()} added", fg=self.app.palette.success)
+        self.emp_email.set("")
+        self.emp_pw.set("")
+        self.cloud_refresh_members()
+
+    def cloud_refresh_members(self):
+        try:
+            members = models.cloud_list_members(self.app.db)
+        except Exception as e:
+            self.cloud_members.delete("1.0", "end")
+            self.cloud_members.insert("1.0", "Could not load team: " + str(e))
+            return
+        self.cloud_members.delete("1.0", "end")
+        if not members:
+            self.cloud_members.insert("1.0", "(no team members yet)")
+            return
+        for m in members:
+            self.cloud_members.insert("end", f"{m.get('role', ''):10s}  {m.get('user_id', '')}\n")
 
     def tab_dashboard(self):
         card = self._tab("Dashboard")
