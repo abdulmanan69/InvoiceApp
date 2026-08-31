@@ -59,7 +59,11 @@ def parse_pasted(text: str) -> tuple[str, str]:
 
 def _request(method: str, url: str, headers: dict, body=None, timeout: float = 15.0):
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    # a real User-Agent is required: api.supabase.com sits behind Cloudflare, which bans the
+    # default Python-urllib signature with "403 error code: 1010"
+    h = {"User-Agent": "InvoiceApp/1.0 (Windows)", "Accept": "application/json"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, method=method, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")

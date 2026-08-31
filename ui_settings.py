@@ -583,6 +583,9 @@ class SettingsPage(tk.Frame):
 
     def _easy_continue(self, tok, projs):
         import threading
+        # ignore paused/dead projects when a live one exists - usually leaves exactly one choice
+        alive = [p for p in projs if (p.get("status") or "").upper() not in ("INACTIVE", "REMOVED")]
+        projs = alive or projs
         ref = None
         if len(projs) == 1:
             ref = projs[0].get("id") or projs[0].get("ref")
