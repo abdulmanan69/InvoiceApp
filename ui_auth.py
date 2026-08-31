@@ -86,11 +86,26 @@ class JoinShopDialog(_CenteredDialog):
         self.form.entry("Your name", "full_name")
         self.form.entry("Your email *", "email")
         self.form.entry("Choose a password *", "password", show="*")
+        frow = tk.Frame(self.body, bg=p.bg)
+        frow.pack(fill="x", pady=(4, 0))
+        button(frow, "Open invite file...", self.pick_file, "secondary-outline").pack(side="left")
         self.message = tk.Label(self.body, text="", font=p.fonts["small"], bg=p.bg, fg=p.muted, anchor="w",
                                 wraplength=490, justify="left")
         self.message.pack(fill="x", pady=(6, 0))
         self.buttons("Join shop", self.join, cancel_text="Back")
         self.form.widgets["code"].focus_set()
+
+    def pick_file(self):
+        path = ask_open_path(self, "Open invite file", [("Invite file", "*.txt"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                self.form.vars["code"].set(fh.read().strip())
+            self.message.configure(text="Invite loaded - now enter your email and choose a new password.",
+                                   fg=self.app.palette.muted)
+        except Exception as e:
+            self.message.configure(text="Could not read the file: " + str(e), fg=self.app.palette.danger)
         self.bind("<Return>", lambda e: self.join())
 
     def join(self):

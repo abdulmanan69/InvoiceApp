@@ -489,10 +489,11 @@ class SettingsPage(tk.Frame):
             row=r, column=0, sticky="e", padx=(0, 8), pady=4)
         irow = tk.Frame(card, bg=p.card)
         irow.grid(row=r, column=1, columnspan=4, sticky="w", pady=4)
-        button(irow, "Copy invite code", self.cloud_copy_invite, "primary").pack(side="left")
-        tk.Label(card, text="Send that one code to your employee (WhatsApp, email...). On their PC they open the app, "
-                            "click 'Join a shop' on the login screen, paste the code and pick their own email + "
-                            "password. That is the whole setup for them.",
+        button(irow, "Save invite file", self.cloud_save_invite, "primary").pack(side="left")
+        button(irow, "Copy invite code", self.cloud_copy_invite, "outline").pack(side="left", padx=(8, 0))
+        tk.Label(card, text="Easiest: 'Save invite file' and send that FILE on WhatsApp/email. On their PC: open the "
+                            "app -> 'Join a shop' -> 'Open invite file' -> their own email + a new password. Done. "
+                            "('Copy invite code' is the same thing as text, for pasting instead.)",
                  font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=560, justify="left").grid(
             row=r + 1, column=1, columnspan=4, sticky="w", pady=(0, 6))
 
@@ -846,6 +847,28 @@ class SettingsPage(tk.Frame):
         self.clipboard_append(code)
         self.cloud_status.configure(text="Invite code copied - send it to your employee (WhatsApp, email...).",
                                     fg=self.app.palette.success)
+
+    def cloud_save_invite(self):
+        self._cloud_busy("Building invite file...")
+        try:
+            code = models.cloud_invite_text(self.app.db)
+        except Exception as e:
+            self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
+            return
+        shop = (self.app.settings.get("cloud_shop_name") or "shop").strip().replace(" ", "-") or "shop"
+        path = ask_save_path(self, "Save invite file", f"invite-{shop}.txt", ".txt",
+                             [("Invite file", "*.txt"), ("All files", "*.*")])
+        if not path:
+            self.cloud_status.configure(text="Cancelled.", fg=self.app.palette.muted)
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(code + "\n")
+        except Exception as e:
+            self.cloud_status.configure(text="Could not save: " + str(e), fg=self.app.palette.danger)
+            return
+        self.cloud_status.configure(text="Invite file saved - send the file to your employee; they press "
+                                         "'Open invite file' inside 'Join a shop'.", fg=self.app.palette.success)
 
     def cloud_sync_now(self):
         import threading

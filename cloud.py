@@ -244,7 +244,7 @@ class Management:
 
     def set_autoconfirm(self, ref: str, on: bool = True) -> None:
         _request("PATCH", f"{self.BASE}/v1/projects/{ref}/config/auth", self.h,
-                 {"mailer_autoconfirm": bool(on)})
+                 {"mailer_autoconfirm": bool(on), "disable_signup": False})
 
 
 def pick_api_keys(keys: list) -> tuple[str, str]:
