@@ -211,10 +211,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
 SYNC_TABLES = ["customers", "vendors", "products", "documents", "document_items", "payments",
                "purchases", "purchase_items", "returns", "return_items", "stock_movements"]
 
-# Tables whose local inserts/updates are actively queued + pushed to the cloud right now.
-# Every SYNC_TABLE still gets a uuid, but only these enqueue into sync_outbox and get pulled.
-# Grow this list as each entity's two-way sync is proven (Phase C).
-SYNC_ACTIVE = ["customers"]
+# Tables whose local changes are actively queued + pushed to the cloud (Phase C: all of them).
+# Inserts/updates enqueue an 'upsert', hard DELETEs enqueue a 'delete' tombstone.
+SYNC_ACTIVE = list(SYNC_TABLES)
 
 # Columns added after v1.0 (table, column, declaration). Applied idempotently on every start.
 MIGRATIONS = [
@@ -433,6 +432,7 @@ class Database:
             self.conn.execute(
                 f"CREATE TRIGGER trg_{t}_newuuid AFTER INSERT ON {t} "
                 f"WHEN NEW.uuid IS NULL OR NEW.uuid = '' BEGIN {ins} END;")
+            self.conn.execute(f"DROP TRIGGER IF EXISTS trg_{t}_del_ob")
             if active:
                 self.conn.execute(
                     f"CREATE TRIGGER trg_{t}_upd_ob AFTER UPDATE ON {t} "
@@ -441,6 +441,13 @@ class Database:
                     f"UPDATE {t} SET row_updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE rowid = NEW.rowid; "
                     f"INSERT INTO sync_outbox(table_name, row_uuid, op, payload, created_at) "
                     f"VALUES ('{t}', NEW.uuid, 'upsert', '', strftime('%Y-%m-%d %H:%M:%f','now')); END;")
+                # hard deletes leave a tombstone so the removal reaches every other PC
+                self.conn.execute(
+                    f"CREATE TRIGGER trg_{t}_del_ob AFTER DELETE ON {t} "
+                    f"WHEN COALESCE((SELECT value FROM sync_state WHERE key = 'sync_suppress'), '0') = '0' "
+                    f"AND OLD.uuid IS NOT NULL AND OLD.uuid <> '' BEGIN "
+                    f"INSERT INTO sync_outbox(table_name, row_uuid, op, payload, created_at) "
+                    f"VALUES ('{t}', OLD.uuid, 'delete', '', strftime('%Y-%m-%d %H:%M:%f','now')); END;")
 
     def _backfill_sync_columns(self):
         """Give every existing row a UUID and a row_updated_at so it is ready to sync later."""

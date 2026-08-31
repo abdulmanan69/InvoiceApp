@@ -106,6 +106,104 @@ class SyncPhaseBTests(unittest.TestCase):
         self.assertEqual([c["phone"] for c in models.list_customers(b_app.db)][0], "999")
 
 
+class FullEntitySyncTests(unittest.TestCase):
+    """Phase C: documents/items/payments/stock flow between PCs with FK translation."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.server = FakeSupabase()
+        self._orig_client = models.cloud_client
+        models.cloud_client = lambda db: self.server
+
+    def tearDown(self):
+        models.cloud_client = self._orig_client
+
+    def _make_pc(self, name):
+        app = types.SimpleNamespace()
+        app.db = dbmod.Database(os.path.join(self.tmp, f"{name}.db"))
+        for k, v in {"cloud_enabled": "1", "cloud_url": "http://x", "cloud_anon_key": "k",
+                     "cloud_shop_id": "SHOP1", "cloud_auto_sync": "1"}.items():
+            app.db.set_setting(k, v)
+        app.db.set_secret("session", {"access_token": "tok", "refresh_token": "r", "user": {"id": "u1"}})
+        return app, sync.SyncEngine(app)
+
+    def _burn_ids(self, db, table, count):
+        """Advance a table's AUTOINCREMENT counter silently so local ids differ across 'PCs'."""
+        db.set_sync_state("sync_suppress", "1")
+        try:
+            for _ in range(count):
+                if table == "customers":
+                    cur = db.execute("INSERT INTO customers(name, created_at) VALUES ('burn', '2026-01-01')")
+                else:
+                    cur = db.execute("INSERT INTO products(name, created_at) VALUES ('burn', '2026-01-01')")
+                db.execute(f"DELETE FROM {table} WHERE id = ?", (cur.lastrowid,))
+        finally:
+            db.set_sync_state("sync_suppress", "0")
+
+    def test_invoice_graph_syncs_with_fk_translation_and_delete(self):
+        a_app, a = self._make_pc("a")
+        b_app, b = self._make_pc("b")
+        # make PC-B's autoincrement ids differ from PC-A's so any untranslated FK would break
+        self._burn_ids(b_app.db, "customers", 3)
+        self._burn_ids(b_app.db, "products", 5)
+
+        adb = a_app.db
+        cid = adb.execute("INSERT INTO customers(name, phone, created_at) VALUES ('Ali', '0300', '2026-01-01')").lastrowid
+        pid = adb.execute("INSERT INTO products(name, unit_price, created_at) VALUES ('Mouse', 850, '2026-01-01')").lastrowid
+        did = adb.execute(
+            "INSERT INTO documents(doc_type, number, customer_id, date, subtotal, total, created_at, updated_at)"
+            " VALUES ('invoice', 'INV-0001', ?, '2026-01-02', 850, 850, '2026-01-02', '2026-01-02')", (cid,)).lastrowid
+        adb.execute("INSERT INTO document_items(document_id, product_id, description, quantity, unit_price, line_total)"
+                    " VALUES (?, ?, 'Mouse', 1, 850, 850)", (did, pid))
+        adb.execute("INSERT INTO payments(invoice_id, amount, date, created_at)"
+                    " VALUES (?, 500, '2026-01-03', '2026-01-03')", (did,))
+        adb.execute("INSERT INTO stock_movements(product_id, qty, kind, ref_type, ref_id, date, created_at)"
+                    " VALUES (?, -1, 'sale', 'invoice', ?, '2026-01-02', '2026-01-02')", (pid, did))
+
+        self.assertEqual(a.sync_now()["last_error"], "")
+        self.assertEqual(b.sync_now()["last_error"], "")
+
+        bdb = b_app.db
+        bdoc = bdb.query_one("SELECT * FROM documents WHERE number = 'INV-0001'")
+        self.assertIsNotNone(bdoc)
+        bcust = bdb.query_one("SELECT * FROM customers WHERE name = 'Ali'")
+        bprod = bdb.query_one("SELECT * FROM products WHERE name = 'Mouse'")
+        self.assertNotEqual(bcust["id"], cid)                      # ids differ across PCs...
+        self.assertEqual(bdoc["customer_id"], bcust["id"])         # ...but the FK still points right
+        bitem = bdb.query_one("SELECT * FROM document_items WHERE document_id = ?", (bdoc["id"],))
+        self.assertIsNotNone(bitem)
+        self.assertEqual(bitem["product_id"], bprod["id"])
+        bpay = bdb.query_one("SELECT * FROM payments WHERE invoice_id = ?", (bdoc["id"],))
+        self.assertEqual(bpay["amount"], 500)
+        bmove = bdb.query_one("SELECT * FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = ?", (bdoc["id"],))
+        self.assertEqual(bmove["product_id"], bprod["id"])
+        self.assertEqual(bmove["qty"], -1)
+
+        # PC-A deletes the invoice like the app does (movements by ref, doc row; children cascade)
+        adb.execute("DELETE FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = ?", (did,))
+        adb.execute("DELETE FROM documents WHERE id = ?", (did,))
+        self.assertEqual(a.sync_now()["last_error"], "")
+        self.assertEqual(b.sync_now()["last_error"], "")
+        self.assertIsNone(bdb.query_one("SELECT * FROM documents WHERE number = 'INV-0001'"))
+        self.assertEqual(bdb.scalar("SELECT COUNT(*) FROM document_items", (), 0), 0)
+        self.assertEqual(bdb.scalar("SELECT COUNT(*) FROM payments", (), 0), 0)
+        self.assertEqual(bdb.scalar("SELECT COUNT(*) FROM stock_movements WHERE ref_type = 'invoice'", (), 0), 0)
+
+    def test_duplicate_offline_numbers_both_survive(self):
+        a_app, a = self._make_pc("a")
+        b_app, b = self._make_pc("b")
+        for db in (a_app.db, b_app.db):
+            db.execute("INSERT INTO documents(doc_type, number, date, subtotal, total, created_at, updated_at)"
+                       " VALUES ('invoice', 'INV-0007', '2026-01-02', 10, 10, '2026-01-02', '2026-01-02')")
+        self.assertEqual(a.sync_now()["last_error"], "")
+        self.assertEqual(b.sync_now()["last_error"], "")   # pulls A's INV-0007 -> UNIQUE dodge
+        self.assertEqual(a.sync_now()["last_error"], "")   # pulls B's (renamed) one back
+        nums_b = sorted(r["number"] for r in b_app.db.query("SELECT number FROM documents"))
+        self.assertEqual(len(nums_b), 2)
+        self.assertTrue(any(n == "INV-0007" for n in nums_b))
+        self.assertTrue(any(n.startswith("INV-0007-") for n in nums_b))
+
+
 class InviteTests(unittest.TestCase):
     def _code(self):
         import base64
