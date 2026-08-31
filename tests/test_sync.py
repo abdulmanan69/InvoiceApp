@@ -120,6 +120,17 @@ class InviteTests(unittest.TestCase):
         with self.assertRaises(Exception):
             models.cloud_parse_invite("SHOP-notbase64!!!")
 
+    def test_parse_pasted_blob(self):
+        import base64
+        import cloud as cloudmod
+        anon = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+                + base64.urlsafe_b64encode(b'{"role":"anon"}').decode().rstrip("=") + ".sig123456")
+        blob = f"Project URL\nhttps://abcd1234.supabase.co\nsome text {anon} more"
+        u, k = cloudmod.parse_pasted(blob)
+        self.assertEqual(u, "https://abcd1234.supabase.co")
+        self.assertEqual(k, anon)
+        self.assertEqual(cloudmod.parse_pasted("nothing here"), ("", ""))
+
     def test_join_invite_creates_local_employee(self):
         db = dbmod.Database(os.path.join(tempfile.mkdtemp(), "e.db"))
 

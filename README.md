@@ -128,3 +128,18 @@ make it less alarming. To remove it completely you need an OV/EV code-signing ce
 *Settings → Data → Back up database…* copies the live database anywhere. *Restore from backup…*
 validates the file, asks for confirmation, keeps `invoice_app.db.before-restore`, then replaces the
 current data (customers, invoices, stock, users — everything).
+
+## Cloud sync quick start (optional)
+
+Sync all shops' PCs through one free Supabase project. Everything keeps working offline.
+
+**Owner (once):** create a project at supabase.com -> in the app: Settings -> Cloud sync ->
+copy the Project URL + anon key from the dashboard (any blob containing both works) -> press
+"Connect & check" -> if asked, press "Database setup" (SQL is copied, editor opens: paste, Run) ->
+sign in / Create account (your shop is created automatically) -> press "Copy invite code".
+
+**Each employee:** open the app -> "Join a shop" on the login screen -> paste the invite code +
+pick their own email and password. Done - no keys, no other setup.
+
+Tip: in Supabase -> Authentication -> Sign In/Providers -> Email, turn OFF "Confirm email"
+so employees can join instantly.

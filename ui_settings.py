@@ -406,9 +406,12 @@ class SettingsPage(tk.Frame):
         r = card.grid_size()[1]
         row = tk.Frame(card, bg=p.card)
         row.grid(row=r, column=1, sticky="w", pady=(2, 4))
-        button(row, "Connect & check", self.cloud_test, "outline").pack(side="left")
-        button(row, "Copy setup SQL", self.cloud_copy_sql, "secondary-outline").pack(side="left", padx=(8, 0))
-        button(row, "Open SQL editor", self.cloud_open_sql, "secondary-outline").pack(side="left", padx=(8, 0))
+        button(row, "Connect & check", self.cloud_test, "primary").pack(side="left")
+        button(row, "Database setup (copy SQL + open editor)", self.cloud_db_setup, "outline").pack(side="left", padx=(8, 0))
+        tk.Label(card, text="Tip: copy anything containing the URL and key (even the whole dashboard page) and just "
+                            "press Connect & check - the app finds both by itself.",
+                 font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=640, justify="left").grid(
+            row=card.grid_size()[1], column=1, columnspan=4, sticky="w", pady=(0, 4))
         self.cloud_status = tk.Label(row, text="", font=p.fonts["small"], bg=p.card, fg=p.muted)
         self.cloud_status.pack(side="left", padx=(10, 0))
 
@@ -435,7 +438,7 @@ class SettingsPage(tk.Frame):
         button(row, "Create account", self.cloud_create_acct, "outline").pack(side="left", padx=(8, 0))
         button(row, "Sign out", self.cloud_signout, "secondary-outline").pack(side="left", padx=(8, 0))
 
-        self._section(card, "STEP 3 - YOUR SHOP")
+        self._section(card, "STEP 3 - YOUR SHOP (created automatically when you sign in)")
         r = card.grid_size()[1]
         tk.Label(card, text="Current shop", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
             row=r, column=0, sticky="e", padx=(0, 8), pady=4)
@@ -526,7 +529,7 @@ class SettingsPage(tk.Frame):
             elif not models.cloud_token(db):
                 nxt = "Next: STEP 2 - sign in (or press Create account)."
             elif not models.cloud_shop_id(db):
-                nxt = "Next: STEP 3 - type a shop name and press Create shop."
+                nxt = "Next: STEP 3 - press Create shop (empty name = your company name is used)."
             else:
                 nxt = "All set. Copy the invite code (STEP 4) for each employee - sync runs by itself."
             self.cloud_hint.configure(text=nxt)
@@ -535,7 +538,30 @@ class SettingsPage(tk.Frame):
         self.cloud_status.configure(text=msg, fg=self.app.palette.muted)
         self.cloud_status.update_idletasks()
 
+    def _smart_fill(self):
+        """Fill URL/key from whatever is available: a blob pasted into either field, or the clipboard."""
+        url = self.vars["cloud_url"].get().strip()
+        key = self.vars["cloud_anon_key"].get().strip()
+        u, k = cloud.parse_pasted(url + "\n" + key)
+        if not (u and k):
+            try:
+                cu, ck = cloud.parse_pasted(self.clipboard_get())
+                u, k = u or cu, k or ck
+            except Exception:
+                pass
+        if u:
+            self.vars["cloud_url"].set(u)
+        if k and (not key or cloud.key_role(key) != "anon"):
+            self.vars["cloud_anon_key"].set(k)
+
+    def cloud_db_setup(self):
+        self.cloud_copy_sql()
+        self.cloud_open_sql()
+        self.cloud_status.configure(text="SQL copied & editor opened: paste (Ctrl+V), press RUN, come back and press "
+                                         "Connect & check.", fg=self.app.palette.success)
+
     def cloud_test(self):
+        self._smart_fill()
         self._persist_cloud_conf()
         role = cloud.key_role(self.vars["cloud_anon_key"].get())
         if role == "service_role":
@@ -568,7 +594,9 @@ class SettingsPage(tk.Frame):
             self.cloud_status.configure(text="Sign in failed: " + str(e), fg=self.app.palette.danger)
             return
         self.cloud_pw.set("")
-        self.cloud_status.configure(text="Signed in", fg=self.app.palette.success)
+        extra = models.cloud_auto_shop(self.app.db)
+        self.app.reload_settings()
+        self.cloud_status.configure(text="Signed in" + (f" - {extra}" if extra else ""), fg=self.app.palette.success)
         self._cloud_refresh_labels()
         self.app.sync.trigger()
 
@@ -580,7 +608,8 @@ class SettingsPage(tk.Frame):
     def cloud_create_shop(self):
         self._cloud_busy("Creating shop...")
         try:
-            shop = models.cloud_create_shop(self.app.db, self.cloud_shop_name.get())
+            shop = models.cloud_create_shop(self.app.db, self.cloud_shop_name.get().strip()
+                                            or self.app.settings.get("company_name", "") or "My Shop")
         except Exception as e:
             self.cloud_status.configure(text=str(e), fg=self.app.palette.danger)
             return
@@ -695,7 +724,11 @@ class SettingsPage(tk.Frame):
                                              "the link, then press Sign in.", fg=self.app.palette.danger)
         else:
             self.cloud_pw.set("")
-            self.cloud_status.configure(text="Account created & signed in. Next: step 3.", fg=self.app.palette.success)
+            extra = models.cloud_auto_shop(self.app.db)
+            self.app.reload_settings()
+            self.cloud_status.configure(text="Account created & signed in." + (f" {extra}." if extra else ""),
+                                        fg=self.app.palette.success)
+            self.app.sync.trigger()
         self._cloud_refresh_labels()
 
     def cloud_copy_invite(self):

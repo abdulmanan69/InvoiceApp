@@ -1621,6 +1621,26 @@ def cloud_create_account(db: Database, email: str, password: str) -> str:
     raise ValidationError("Could not create the account (maybe it already exists - try Sign in).")
 
 
+def cloud_auto_shop(db: Database) -> str:
+    """After sign-in: make sure a shop is linked, creating one automatically (named after the
+    company) when the account has none yet. Returns a short status text, '' if nothing was needed."""
+    if cloud_shop_id(db):
+        return ""
+    try:
+        shops = cloud_list_shops(db)
+    except Exception:
+        return ""
+    if shops:
+        cloud_link_shop(db, shops[0]["id"], shops[0].get("name", ""))
+        return f"linked to shop '{shops[0].get('name', '')}'"
+    name = _clean(db.get_setting("company_name", "")) or "My Shop"
+    try:
+        shop = cloud_create_shop(db, name)
+    except Exception:
+        return ""       # e.g. database not set up yet - the STEP 1 guidance covers that
+    return f"shop '{shop['name']}' created"
+
+
 def cloud_list_members(db: Database) -> list[dict]:
     tok = cloud_token(db)
     shop_id = db.get_setting("cloud_shop_id", "")

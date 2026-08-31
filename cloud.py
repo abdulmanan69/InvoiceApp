@@ -6,6 +6,7 @@ raises CloudError with a friendly message on failure, so the UI can stay respons
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.parse
@@ -33,6 +34,27 @@ def key_role(key: str) -> str:
         except Exception:
             return ""
     return ""
+
+
+def parse_pasted(text: str) -> tuple[str, str]:
+    """Pull the project URL and the anon key out of ANY pasted blob (the whole dashboard page,
+    both values on separate lines, a value pasted into the wrong box...).
+    Returns (url, anon_key); either can be '' when not found."""
+    t = text or ""
+    url = ""
+    m = re.search(r"https://[a-z0-9-]+\.supabase\.co", t)
+    if m:
+        url = m.group(0)
+    key = ""
+    m = re.search(r"sb_publishable_[A-Za-z0-9_-]+", t)
+    if m:
+        key = m.group(0)
+    if not key:
+        for cand in re.findall(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}", t):
+            if key_role(cand) == "anon":
+                key = cand
+                break
+    return url, key
 
 
 def _request(method: str, url: str, headers: dict, body=None, timeout: float = 15.0):

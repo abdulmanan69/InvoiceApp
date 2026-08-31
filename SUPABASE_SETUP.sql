@@ -6,6 +6,8 @@
 -- Supabase Auth users; the owner adds them from the app (Settings -> Cloud sync -> Team).
 -- The app stores each row as JSON in a `data` column, so this schema never has to
 -- change when the app adds fields.
+-- SAFE TO RE-RUN ANY TIME: it only creates or updates things, it never deletes your data.
+-- If anything cloud-related ever errors, re-running this whole file is the first fix to try.
 -- ============================================================================
 
 -- ---- control tables -------------------------------------------------------
@@ -200,5 +202,10 @@ begin
 end $$;
 grant execute on function public.join_shop(uuid, text) to authenticated;
 
--- Done. In the app: Settings -> Cloud sync -> paste Project URL + anon key,
--- sign in, create your shop, then add employees under Team.
+-- ---- tell the API layer to pick up the new tables/functions RIGHT NOW ------
+-- Without this, PostgREST can keep serving its cached schema for a while and the app
+-- would see "404 function does not exist" even though the SQL ran fine.
+notify pgrst, 'reload schema';
+
+-- Done. In the app: Settings -> Cloud sync -> press Connect & check,
+-- sign in (your shop is created automatically), then Copy invite code for employees.
