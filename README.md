@@ -133,10 +133,11 @@ current data (customers, invoices, stock, users — everything).
 
 Sync all shops' PCs through one free Supabase project. Everything keeps working offline.
 
-**Owner (once):** create a project at supabase.com -> in the app: Settings -> Cloud sync ->
-copy the Project URL + anon key from the dashboard (any blob containing both works) -> press
-"Connect & check" -> if asked, press "Database setup" (SQL is copied, editor opens: paste, Run) ->
-sign in / Create account (your shop is created automatically) -> press "Copy invite code".
+**Owner (once):** sign up free at supabase.com -> in the app: Settings -> Cloud sync ->
+press "Get token" (opens supabase.com/dashboard/account/tokens), Generate new token, paste it ->
+press "Set everything up" - the app creates and configures the whole cloud by itself ->
+Create account (your shop is created automatically) -> press "Copy invite code".
+(A manual URL+key+SQL path is available below the easy setup if you prefer.)
 
 **Each employee:** open the app -> "Join a shop" on the login screen -> paste the invite code +
 pick their own email and password. Done - no keys, no other setup.

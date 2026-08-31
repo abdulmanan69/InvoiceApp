@@ -199,3 +199,68 @@ class Supabase:
     def rpc(self, fn: str, token: str, params: dict | None = None):
         _, data = _request("POST", f"{self.url}/rest/v1/rpc/{fn}", self._auth_headers(token), params or {})
         return data
+
+
+class Management:
+    """Supabase Management API client (personal access token, sbp_...). Powers the owner's
+    one-token 'easy setup': list/create the project, run the setup SQL, read the API keys,
+    switch off email confirmation. The token is used for the operation and never stored."""
+
+    BASE = "https://api.supabase.com"
+
+    def __init__(self, token: str):
+        self.h = {"Authorization": f"Bearer {(token or '').strip()}", "Content-Type": "application/json"}
+
+    def orgs(self) -> list[dict]:
+        return _request("GET", f"{self.BASE}/v1/organizations", self.h)[1] or []
+
+    def projects(self) -> list[dict]:
+        return _request("GET", f"{self.BASE}/v1/projects", self.h)[1] or []
+
+    def project(self, ref: str) -> dict:
+        return _request("GET", f"{self.BASE}/v1/projects/{ref}", self.h)[1] or {}
+
+    def create_project(self, org_id, name: str, db_pass: str, region: str) -> dict:
+        _, d = _request("POST", f"{self.BASE}/v1/projects", self.h,
+                        {"organization_id": org_id, "name": name, "db_pass": db_pass, "region": region},
+                        timeout=45)
+        return d or {}
+
+    def api_keys(self, ref: str) -> list[dict]:
+        try:
+            _, d = _request("GET", f"{self.BASE}/v1/projects/{ref}/api-keys?reveal=true", self.h)
+        except CloudError:
+            _, d = _request("GET", f"{self.BASE}/v1/projects/{ref}/api-keys", self.h)
+        return d or []
+
+    def run_query(self, ref: str, sql: str):
+        _, d = _request("POST", f"{self.BASE}/v1/projects/{ref}/database/query", self.h,
+                        {"query": sql}, timeout=90)
+        return d
+
+    def set_autoconfirm(self, ref: str, on: bool = True) -> None:
+        _request("PATCH", f"{self.BASE}/v1/projects/{ref}/config/auth", self.h,
+                 {"mailer_autoconfirm": bool(on)})
+
+
+def pick_api_keys(keys: list) -> tuple[str, str]:
+    """From a project's api-keys listing, pick (anon_or_publishable, service_role_or_secret)."""
+    anon = service = ""
+    for k in keys or []:
+        name = (k.get("name") or k.get("id") or "").lower()
+        val = k.get("api_key") or ""
+        if not val:
+            continue
+        if name == "anon" or k.get("type") == "publishable":
+            anon = anon or val
+        elif name == "service_role" or k.get("type") == "secret":
+            service = service or val
+    if not anon:                       # fall back to the role baked inside each JWT
+        for k in keys or []:
+            val = k.get("api_key") or ""
+            r = key_role(val)
+            if r == "anon":
+                anon = anon or val
+            elif r == "service_role":
+                service = service or val
+    return anon, service

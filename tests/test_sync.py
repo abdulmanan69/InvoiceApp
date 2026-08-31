@@ -120,6 +120,14 @@ class InviteTests(unittest.TestCase):
         with self.assertRaises(Exception):
             models.cloud_parse_invite("SHOP-notbase64!!!")
 
+    def test_pick_api_keys(self):
+        import cloud as cloudmod
+        legacy = [{"name": "anon", "api_key": "AK"}, {"name": "service_role", "api_key": "SK"}]
+        self.assertEqual(cloudmod.pick_api_keys(legacy), ("AK", "SK"))
+        modern = [{"type": "publishable", "api_key": "sb_publishable_x"},
+                  {"type": "secret", "api_key": "sb_secret_y"}, {"name": "weird", "api_key": ""}]
+        self.assertEqual(cloudmod.pick_api_keys(modern), ("sb_publishable_x", "sb_secret_y"))
+
     def test_parse_pasted_blob(self):
         import base64
         import cloud as cloudmod

@@ -1621,6 +1621,59 @@ def cloud_create_account(db: Database, email: str, password: str) -> str:
     raise ValidationError("Could not create the account (maybe it already exists - try Sign in).")
 
 
+def cloud_mgmt_projects(token: str) -> list[dict]:
+    from cloud import Management
+    return Management(token).projects()
+
+
+def cloud_easy_setup(db: Database, token: str, ref: str | None, cb=None) -> None:
+    """One-token setup: (create and) prepare a whole Supabase project - database schema, security,
+    invite system, keys stored, email confirmation off. cb(text) receives progress lines."""
+    import time as _time
+    import uuid as _u
+    from cloud import Management, pick_api_keys
+    from utils import resource_path
+    say = cb or (lambda m: None)
+    m = Management(token)
+    if not ref:
+        say("Creating a new Supabase project (InvoiceApp)...")
+        orgs = m.orgs()
+        if not orgs:
+            raise ValidationError("Your Supabase account has no organization yet - sign in at supabase.com "
+                                  "once, then try again.")
+        pw = "Inv!" + _u.uuid4().hex[:20]
+        db.set_secret("db_password", pw)          # kept in case you ever need direct DB access
+        proj = m.create_project(orgs[0].get("id"), "InvoiceApp", pw, "ap-south-1")
+        ref = proj.get("id") or proj.get("ref")
+        if not ref:
+            raise ValidationError("Supabase did not return the new project - try again in a minute.")
+    say("Waiting for the project to be ready (a new one takes ~2 minutes)...")
+    for _ in range(60):
+        status = (m.project(ref).get("status") or "").upper()
+        if status in ("ACTIVE_HEALTHY", "ACTIVE"):
+            break
+        _time.sleep(5)
+    else:
+        raise ValidationError("The project is taking unusually long to start - wait a minute and press "
+                              "the button again (it is safe to retry).")
+    say("Reading the project keys...")
+    anon, service = pick_api_keys(m.api_keys(ref))
+    if not anon:
+        raise ValidationError("Could not read the project's API keys - try again.")
+    db.set_settings({"cloud_url": f"https://{ref}.supabase.co", "cloud_anon_key": anon, "cloud_enabled": "1"})
+    if service:
+        db.set_secret("service_key", service)
+    say("Setting up the database (tables, security, invite system)...")
+    with open(resource_path("SUPABASE_SETUP.sql"), "r", encoding="utf-8") as fh:
+        m.run_query(ref, fh.read())
+    say("Switching off email confirmation so employees can join instantly...")
+    try:
+        m.set_autoconfirm(ref, True)
+    except Exception:
+        pass                                       # nice-to-have; joining still works with the email step
+    db.log("cloud", "Easy cloud setup completed", "cloud", None)
+
+
 def cloud_auto_shop(db: Database) -> str:
     """After sign-in: make sure a shop is linked, creating one automatically (named after the
     company) when the account has none yet. Returns a short status text, '' if nothing was needed."""

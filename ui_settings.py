@@ -390,7 +390,7 @@ class SettingsPage(tk.Frame):
         card = self._tab("Cloud sync")
         p = self.app.palette
         card.grid_columnconfigure(1, weight=1)
-        self._section(card, "Cloud sync (Supabase) - share data across shops, still works offline")
+        self._section(card, "Cloud sync (Supabase) - all your PCs share the same data, still works offline")
         r = card.grid_size()[1]
         tk.Label(card, text="Owner: follow steps 1-4 below, once. Employees never open this tab - on their PC they "
                             "click 'Join a shop' on the login screen and paste the invite code from step 4. "
@@ -400,6 +400,23 @@ class SettingsPage(tk.Frame):
         r = card.grid_size()[1]
         self.cloud_hint = tk.Label(card, text="", font=p.fonts["small_bold"], bg=p.card, fg=p.accent, anchor="w")
         self.cloud_hint.grid(row=r, column=0, columnspan=6, sticky="w", pady=(0, 6))
+
+        self._section(card, "STEP 1 (EASY) - ONE-TOKEN SETUP - recommended")
+        r = card.grid_size()[1]
+        tk.Label(card, text="Access token", font=p.fonts["base"], bg=p.card, fg=p.muted, anchor="e", width=20).grid(
+            row=r, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.cloud_pat = tk.StringVar()
+        tb.Entry(card, textvariable=self.cloud_pat, width=40, show="*").grid(row=r, column=1, sticky="w", pady=4)
+        prow = tk.Frame(card, bg=p.card)
+        prow.grid(row=r, column=2, columnspan=2, sticky="w", padx=(8, 0))
+        button(prow, "Get token", self.cloud_get_token, "secondary-outline").pack(side="left")
+        button(prow, "Set everything up", self.cloud_easy, "primary").pack(side="left", padx=(8, 0))
+        tk.Label(card, text="Sign up at supabase.com (free) -> press 'Get token' (opens the right page) -> Generate new "
+                            "token -> paste it here -> 'Set everything up'. The app then creates and configures the "
+                            "whole cloud by itself: project, database, security, invite system, instant employee "
+                            "joins. The token is used once and never stored.",
+                 font=p.fonts["small"], bg=p.card, fg=p.muted, wraplength=640, justify="left").grid(
+            row=r + 1, column=1, columnspan=4, sticky="w", pady=(0, 4))
         self._toggle(card, "Enable cloud sync", "cloud_enabled", "off = pure offline (default)")
         self._row(card, "Project URL", "cloud_url", hint="Supabase -> Project Settings -> Data API -> URL")
         self._row(card, "Anon public key", "cloud_anon_key", hint="Project Settings -> API Keys -> anon public")
@@ -537,6 +554,88 @@ class SettingsPage(tk.Frame):
     def _cloud_busy(self, msg):
         self.cloud_status.configure(text=msg, fg=self.app.palette.muted)
         self.cloud_status.update_idletasks()
+
+    def cloud_get_token(self):
+        import webbrowser
+        webbrowser.open("https://supabase.com/dashboard/account/tokens")
+
+    def cloud_easy(self):
+        import threading
+        tok = self.cloud_pat.get().strip()
+        if not tok.startswith("sbp_"):
+            self.cloud_status.configure(text="Paste a personal ACCESS TOKEN (it starts with sbp_). Press 'Get token' "
+                                             "to open the right page.", fg=self.app.palette.danger)
+            return
+        self._cloud_busy("Looking at your Supabase account...")
+
+        def phase_a():
+            try:
+                projs = models.cloud_mgmt_projects(tok)
+            except Exception as e:
+                self.app.after(0, lambda: self.cloud_status.configure(text="Failed: " + str(e),
+                                                                      fg=self.app.palette.danger))
+                return
+            self.app.after(0, lambda: self._easy_continue(tok, projs))
+
+        threading.Thread(target=phase_a, daemon=True).start()
+
+    def _easy_continue(self, tok, projs):
+        import threading
+        ref = None
+        if len(projs) == 1:
+            ref = projs[0].get("id") or projs[0].get("ref")
+        elif len(projs) > 1:
+            from ui_common import Dialog
+            projs = sorted(projs, key=lambda pr: 0 if "invoice" in (pr.get("name") or "").lower() else 1)
+
+            class PickProj(Dialog):
+                def __init__(s, parent, app, items):
+                    super().__init__(parent, app, "Choose the Supabase project", width=540)
+                    pp = app.palette
+                    tk.Label(s.body, text="You have several projects - which one is for InvoiceApp?",
+                             font=pp.fonts["base"], bg=pp.bg, fg=pp.fg, anchor="w").pack(fill="x", pady=(0, 8))
+                    for pr in items:
+                        nm = f"{pr.get('name', '?')}   ({pr.get('id') or pr.get('ref', '')}  {pr.get('region', '')})"
+                        button(s.body, nm, lambda p=pr: s.pick(p), "outline").pack(fill="x", pady=2)
+                    s.buttons(None, None, cancel_text="Cancel")
+
+                def pick(s, pr):
+                    s.result = pr
+                    s.close()
+
+            chosen = PickProj(self, self.app, projs).show()
+            if not chosen:
+                self.cloud_status.configure(text="Cancelled.", fg=self.app.palette.muted)
+                return
+            ref = chosen.get("id") or chosen.get("ref")
+        self._cloud_busy("Setting everything up - a brand new project takes ~2 minutes...")
+
+        def cb(msg):
+            self.app.after(0, lambda m=msg: self.cloud_status.configure(text=m, fg=self.app.palette.muted))
+
+        def phase_b():
+            try:
+                models.cloud_easy_setup(self.app.db, tok, ref, cb)
+            except Exception as e:
+                self.app.after(0, lambda: self.cloud_status.configure(text="Setup failed: " + str(e),
+                                                                      fg=self.app.palette.danger))
+                return
+
+            def done():
+                self.vars["cloud_enabled"].set("1")
+                self.vars["cloud_url"].set(self.app.db.get_setting("cloud_url", ""))
+                self.vars["cloud_anon_key"].set(self.app.db.get_setting("cloud_anon_key", ""))
+                if self.app.db.get_secret("service_key"):
+                    self.cloud_service.set("********")
+                self.app.reload_settings()
+                self.cloud_pat.set("")
+                self.cloud_status.configure(text="Everything is set up! Now STEP 2: type an email + password and press "
+                                                 "Create account.", fg=self.app.palette.success)
+                self._cloud_refresh_labels()
+
+            self.app.after(0, done)
+
+        threading.Thread(target=phase_b, daemon=True).start()
 
     def _smart_fill(self):
         """Fill URL/key from whatever is available: a blob pasted into either field, or the clipboard."""
