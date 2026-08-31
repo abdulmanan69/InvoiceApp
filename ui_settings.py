@@ -572,8 +572,10 @@ class SettingsPage(tk.Frame):
             try:
                 projs = models.cloud_mgmt_projects(tok)
             except Exception as e:
-                self.app.after(0, lambda: self.cloud_status.configure(text="Failed: " + str(e),
-                                                                      fg=self.app.palette.danger))
+                # bind the message NOW: 'e' is unbound once the except block ends, but the
+                # lambda runs later on the UI thread
+                self.app.after(0, lambda msg=str(e): self.cloud_status.configure(
+                    text="Failed: " + msg, fg=self.app.palette.danger))
                 return
             self.app.after(0, lambda: self._easy_continue(tok, projs))
 
@@ -617,8 +619,8 @@ class SettingsPage(tk.Frame):
             try:
                 models.cloud_easy_setup(self.app.db, tok, ref, cb)
             except Exception as e:
-                self.app.after(0, lambda: self.cloud_status.configure(text="Setup failed: " + str(e),
-                                                                      fg=self.app.palette.danger))
+                self.app.after(0, lambda msg=str(e): self.cloud_status.configure(
+                    text="Setup failed: " + msg, fg=self.app.palette.danger))
                 return
 
             def done():
