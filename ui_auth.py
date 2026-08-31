@@ -6,7 +6,7 @@ import tkinter as tk
 import ttkbootstrap as tb
 
 import models
-from ui_common import Dialog, Form, button, show_error, show_info
+from ui_common import Dialog, Form, ask_open_path, button, show_error, show_info
 
 
 class _CenteredDialog(Dialog):
